@@ -1,6 +1,7 @@
 """Diagonal spread analyzer and short options profitability engine.
 
 Rules and basis option positions are loaded directly from rules.yaml (Single Source of Truth).
+Calculates probability-adjusted Expected Daily Relative Profit for robust options selection.
 """
 
 import logging
@@ -92,7 +93,6 @@ class StrategyRules:
         val_cfg = data["valuation"]
         profit_cfg = data["profit_target"]
 
-        # Support both list 'basis_long_positions' and single 'basis_long'
         positions_raw = data.get("basis_long_positions") or data.get("basis_long")
         if isinstance(positions_raw, dict):
             positions_raw = [positions_raw]
@@ -234,7 +234,7 @@ class DiagonalSpreadAnalyzer:
         return selected_df, diag_df
 
     def analyze_candidate(self, row: pd.Series, spot_price: float) -> Dict[str, Any]:
-        """Perform comprehensive pricing decay, diagonal spread risk, and daily return calculations for a short put."""
+        """Perform comprehensive pricing decay, diagonal spread risk, and Expected Daily Relative Profit calculations."""
         strike = float(row["Strike"])
         mid_price = float(row["Mid"])
         iv = float(row["IV"]) if ("IV" in row and not pd.isna(row["IV"]) and row["IV"] > 0) else 0.25
@@ -268,19 +268,27 @@ class DiagonalSpreadAnalyzer:
         # Avoid zero division
         effective_days = max(1.0, days_to_target)
 
-        # Daily profit in USD
+        # Nominal Daily profit in USD
         daily_profit_usd = target_profit_usd / effective_days
 
         # Risk calculation for diagonal spread on expiration date:
         # Max risk per share = (Short Strike - Long Strike) + (Long Cost Basis - Short Mid Premium)
-        # Using long put basis from YAML rules
         strike_diff = max(0.0, strike - self.basis_long.strike)
         net_debit = self.basis_long.cost_basis - mid_price
         spread_risk_per_share = strike_diff + net_debit
         spread_risk_usd = max(1.0, spread_risk_per_share * 100.0)
 
-        # Daily Relative Profit % = (daily_profit_usd / spread_risk_usd) * 100
-        daily_relative_profit_pct = (daily_profit_usd / spread_risk_usd) * 100.0
+        # Nominal Daily Relative Profit % = (daily_profit_usd / spread_risk_usd) * 100
+        nominal_daily_rel_profit_pct = (daily_profit_usd / spread_risk_usd) * 100.0
+
+        # Estimated Probability of Profit (P_win = 1 - |Delta|)
+        p_win = max(0.0, min(1.0, 1.0 - abs_delta))
+
+        # Expected Daily Relative Profit % = P_win * Nominal Daily Relative Profit %
+        expected_daily_rel_profit_pct = p_win * nominal_daily_rel_profit_pct
+
+        # Delta Efficiency = Nominal Daily Relative Profit % / |Delta|
+        delta_efficiency = (nominal_daily_rel_profit_pct / abs_delta) if abs_delta > 0 else 0.0
 
         # Short put index/identifier format: SYMBOL YYMMDD P STRIKE
         short_put_index = f"{symbol} {exp_date} {strike:.2f}P"
@@ -290,7 +298,8 @@ class DiagonalSpreadAnalyzer:
             "delta": delta,
             "abs_delta": abs_delta,
             "short_put_index": short_put_index,
-            "daily_relative_profit": daily_relative_profit_pct,
+            "expected_daily_relative_profit": expected_daily_rel_profit_pct,
+            "p_win_pct": round(p_win * 100, 2),
             "days_to_target": round(days_to_target, 2),
             "profit_usd": round(target_profit_usd, 2),
             "strike": strike,
@@ -300,6 +309,7 @@ class DiagonalSpreadAnalyzer:
             "iv_pct": round(iv * 100, 2),
             "spread_risk_usd": round(spread_risk_usd, 2),
             "daily_profit_usd": round(daily_profit_usd, 2),
+            "delta_efficiency": round(delta_efficiency, 3),
             "extrinsic_value": round(extrinsic_value, 4),
             "target_price": round(target_price, 4),
         }

@@ -1,4 +1,4 @@
-"""Main entry point for Short Options Profit & Diagonal Spread Selection Analyzer with Multi-Asset Support."""
+"""Main entry point for Short Options Profit & Diagonal Spread Selection Analyzer with Probability-Adjusted Metrics."""
 
 import argparse
 import sys
@@ -59,7 +59,7 @@ def process_single_underlying(
 
     # Diagnostics breakdown table
     diag_table = Table(
-        title=f"Put Options Scan Breakdown for {symbol} (Strikes near Delta Bounds)",
+        title=f"Put Options Scan Breakdown for {symbol} (Strikes near Delta Bounds [{rules.min_delta:.2f}, {rules.max_delta:.2f}])",
         title_style="bold yellow",
         header_style="bold cyan",
         show_lines=True,
@@ -73,7 +73,7 @@ def process_single_underlying(
     diag_table.add_column("Status", justify="center")
     diag_table.add_column("Filter Decision / Reason", justify="left")
 
-    relevant_diag = diag_df[(diag_df["strike"] >= 75.0) & (diag_df["strike"] <= 125.0)].copy()
+    relevant_diag = diag_df[(diag_df["strike"] >= 75.0) & (diag_df["strike"] <= 165.0)].copy()
     if show_all_puts or relevant_diag.empty:
         relevant_diag = diag_df.copy()
 
@@ -97,13 +97,15 @@ def process_single_underlying(
         console.print(f"[yellow]No short put candidates matched filter criteria for {symbol}.[/yellow]")
         return None
 
+    # Exact column ordering using Expected Daily Relative Profit
     display_cols = [
         "symbol",
         "delta",
         "short_put_index",
-        "daily_relative_profit",
+        "expected_daily_relative_profit",
         "days_to_target",
         "profit_usd",
+        "p_win_pct",
         "strike",
         "expiration_date",
         "dte",
@@ -123,19 +125,20 @@ def process_single_underlying(
 
 **Underlying**: {symbol} ($ {spot_price:.2f})  
 **Basis Long Put**: {basis_pos.symbol} ${basis_pos.strike:.2f}P Exp: {basis_pos.expiration_date} (Cost: ${basis_pos.cost_basis:.2f} / share)  
-**Strategy**: Diagonal Put Spread with {rules.target_yield * 100:.0f}% Extrinsic Profit Target (20% residual extrinsic decay)  
+**Strategy**: Diagonal Put Spread with {rules.target_yield * 100:.0f}% Extrinsic Profit Target  
 **Delta Filter**: [{rules.min_delta:.2f}, {rules.max_delta:.2f}]  
+**Ranking Parameter**: **Expected Daily Relative Profit (%)** = $(1 - |\\Delta|) \\times \\text{{Daily Rel Profit}}$  
 **Valuation Rule**: Always use Medium price for Bid/Ask: $\\text{{Mid}} = \\frac{{\\text{{Bid}} + \\text{{Ask}}}}{{2}}$  
 
 ## Candidate Short Puts (Sorted by Delta)
 
-| Delta | Short Put Identifier | Daily Rel Profit (%) | Days to Target | Profit ($) | Strike ($) | Expiration | DTE | Mid Price ($) | Spread Risk ($) | Daily Profit ($) | IV (%) |
-|-------|----------------------|----------------------|----------------|------------|------------|------------|-----|---------------|-----------------|------------------|--------|
+| Delta | Short Put Identifier | Expected Daily Rel Profit (%) | Days to Target | Profit ($) | Win Prob | Strike ($) | Expiration | DTE | Mid Price ($) | Spread Risk ($) | Daily Profit ($) | IV (%) |
+|-------|----------------------|-------------------------------|----------------|------------|----------|------------|------------|-----|---------------|-----------------|------------------|--------|
 """
     for _, row in export_df.iterrows():
         md_content += (
-            f"| {row['delta']:+.4f} | `{row['short_put_index']}` | **{row['daily_relative_profit']:.3f}%** | "
-            f"{row['days_to_target']:.1f} | ${row['profit_usd']:.2f} | ${row['strike']:.2f} | "
+            f"| {row['delta']:+.4f} | `{row['short_put_index']}` | **{row['expected_daily_relative_profit']:.3f}%** | "
+            f"{row['days_to_target']:.1f} | ${row['profit_usd']:.2f} | {row['p_win_pct']:.1f}% | ${row['strike']:.2f} | "
             f"{row['expiration_date']} | {row['dte']} | ${row['mid_price']:.2f} | "
             f"${row['spread_risk_usd']:.2f} | ${row['daily_profit_usd']:.2f} | {row['iv_pct']:.1f}% |\n"
         )
@@ -152,9 +155,10 @@ def process_single_underlying(
     )
     table.add_column("Delta", justify="right", style="cyan")
     table.add_column("Short Put Index", justify="left", style="bold white")
-    table.add_column("Daily Rel Profit", justify="right", style="bold green")
+    table.add_column("Expected Daily Rel Profit", justify="right", style="bold green")
     table.add_column("Days to Target", justify="right", style="yellow")
     table.add_column("Profit ($)", justify="right", style="green")
+    table.add_column("Win Prob", justify="right", style="magenta")
     table.add_column("Strike", justify="right")
     table.add_column("Exp Date", justify="center")
     table.add_column("DTE", justify="right")
@@ -165,9 +169,10 @@ def process_single_underlying(
         table.add_row(
             f"{row['delta']:+.4f}",
             str(row["short_put_index"]),
-            f"{row['daily_relative_profit']:.3f}%",
+            f"{row['expected_daily_relative_profit']:.3f}%",
             f"{row['days_to_target']:.1f}",
             f"${row['profit_usd']:.2f}",
+            f"{row['p_win_pct']:.1f}%",
             f"${row['strike']:.2f}",
             str(row["expiration_date"]),
             str(row["dte"]),
@@ -182,11 +187,11 @@ def process_single_underlying(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Analyze diagonal spread short put candidates with multi-underlying support.")
+    parser = argparse.ArgumentParser(description="Analyze diagonal spread short put candidates with Expected Daily Relative Profit.")
     parser.add_argument("--config", default="rules.yaml", help="Path to YAML rules configuration file (default: rules.yaml)")
     parser.add_argument("--source", default="source", help="Directory containing downloaded options files (default: source)")
     parser.add_argument("--symbol", default=None, help="Target underlying symbol (e.g. UPS, XOM, or ALL). If omitted, an interactive prompt is shown.")
-    parser.add_argument("--min-delta", type=float, default=None, help="Override minimum absolute delta (e.g. 0.10)")
+    parser.add_argument("--min-delta", type=float, default=None, help="Override minimum absolute delta (e.g. 0.15)")
     parser.add_argument("--max-delta", type=float, default=None, help="Override maximum absolute delta (e.g. 0.55)")
     parser.add_argument("--show-all-puts", action="store_true", help="Show full diagnostics of all scanned put options")
     args = parser.parse_args()
@@ -205,7 +210,7 @@ def main():
     console.print(f"[bold blue]Configuration loaded from:[/bold blue] [cyan]{args.config}[/cyan]")
     console.print(f"  • Configured Underlyings: [bold yellow]{', '.join(available_symbols)}[/bold yellow]")
     console.print(f"  • Delta Range: [bold green]{rules.min_delta:.2f} - {rules.max_delta:.2f}[/bold green]")
-    console.print(f"  • Require Strike < Spot: [bold magenta]{rules.require_strike_less_than_spot}[/bold magenta]")
+    console.print(f"  • Ranking Parameter: [bold green]Expected Daily Relative Profit (%) = (1 - |Delta|) * Daily Rel Profit[/bold green]")
     console.print(f"  • Profit Target: [bold green]{rules.target_yield * 100:.0f}%[/bold green] of extrinsic value\n")
 
     loader = DataLoader(args.source)
@@ -228,7 +233,6 @@ def main():
     # Select underlying symbol
     target_symbol = args.symbol
     if not target_symbol:
-        # Prompt user interactively
         choices = available_symbols + ["ALL"]
         console.print("\n[bold cyan]Select Underlying to Analyze:[/bold cyan]")
         for i, sym in enumerate(choices, 1):
@@ -281,22 +285,22 @@ def main():
         combined_md = output_dir / "diagonal_spread_analysis.md"
         combined_df.to_csv(combined_csv, index=False)
 
-        # Write combined markdown report
         md_content = f"""# Multi-Asset Short Options Selection & Diagonal Spread Analysis
 
 **Strategy**: Diagonal Put Spread with {rules.target_yield * 100:.0f}% Extrinsic Profit Target  
 **Delta Filter**: [{rules.min_delta:.2f}, {rules.max_delta:.2f}]  
+**Ranking Metric**: **Expected Daily Relative Profit (%)** = $(1 - |\\Delta|) \\times \\text{{Daily Rel Profit}}$  
 **Valuation Rule**: Always use Medium price for Bid/Ask: $\\text{{Mid}} = \\frac{{\\text{{Bid}} + \\text{{Ask}}}}{{2}}$  
 
 ## Combined Candidate Short Puts
 
-| Symbol | Delta | Short Put Identifier | Daily Rel Profit (%) | Days to Target | Profit ($) | Strike ($) | Expiration | DTE | Mid Price ($) | Spread Risk ($) | Daily Profit ($) | IV (%) |
-|--------|-------|----------------------|----------------------|----------------|------------|------------|-----|---------------|-----------------|------------------|--------|
+| Symbol | Delta | Short Put Identifier | Expected Daily Rel Profit (%) | Days to Target | Profit ($) | Win Prob | Strike ($) | Expiration | DTE | Mid Price ($) | Spread Risk ($) | Daily Profit ($) | IV (%) |
+|--------|-------|----------------------|-------------------------------|----------------|------------|----------|------------|------------|-----|---------------|-----------------|------------------|--------|
 """
         for _, row in combined_df.iterrows():
             md_content += (
-                f"| **{row['symbol']}** | {row['delta']:+.4f} | `{row['short_put_index']}` | **{row['daily_relative_profit']:.3f}%** | "
-                f"{row['days_to_target']:.1f} | ${row['profit_usd']:.2f} | ${row['strike']:.2f} | "
+                f"| **{row['symbol']}** | {row['delta']:+.4f} | `{row['short_put_index']}` | **{row['expected_daily_relative_profit']:.3f}%** | "
+                f"{row['days_to_target']:.1f} | ${row['profit_usd']:.2f} | {row['p_win_pct']:.1f}% | ${row['strike']:.2f} | "
                 f"{row['expiration_date']} | {row['dte']} | ${row['mid_price']:.2f} | "
                 f"${row['spread_risk_usd']:.2f} | ${row['daily_profit_usd']:.2f} | {row['iv_pct']:.1f}% |\n"
             )

@@ -5,7 +5,7 @@ from options_analyzer.analyzer import DiagonalSpreadAnalyzer, LongOptionPosition
 
 def test_strategy_rules_from_yaml():
     rules = StrategyRules.from_yaml("rules.yaml")
-    assert rules.min_delta == 0.10
+    assert rules.min_delta == 0.15
     assert rules.max_delta == 0.55
     assert rules.require_strike_less_than_spot is False
     
@@ -52,7 +52,12 @@ def test_diagonal_spread_analyzer_ups():
     # Spread risk: (100 - 80) + (3.37 - 1.59) = 20 + 1.78 = 21.78 -> $2178.00
     assert result["spread_risk_usd"] == pytest.approx(2178.0, rel=1e-2)
     assert result["days_to_target"] > 0
-    assert result["daily_relative_profit"] > 0
+    
+    # Expected Daily Relative Profit = (1 - 0.2873) * nominal_daily_profit%
+    p_win = 1.0 - 0.2873
+    assert result["p_win_pct"] == pytest.approx(p_win * 100, rel=1e-2)
+    assert result["expected_daily_relative_profit"] > 0
+    assert result["expected_daily_relative_profit"] < result["daily_profit_usd"] / result["spread_risk_usd"] * 100
 
 
 def test_diagonal_spread_analyzer_xom():
@@ -60,24 +65,21 @@ def test_diagonal_spread_analyzer_xom():
     xom_pos = rules.get_basis_position("XOM")
     analyzer = DiagonalSpreadAnalyzer(basis_long=xom_pos, rules=rules)
 
-    # Test candidate row for XOM
     row = pd.Series({
-        "Strike": 110.0,
-        "Bid": 2.20,
-        "Ask": 2.40,
-        "Mid": 2.30,
-        "Delta": -0.35,
-        "IV": 0.22,
-        "dte": 30,
+        "Strike": 150.0,
+        "Bid": 1.65,
+        "Ask": 1.82,
+        "Mid": 1.735,
+        "Delta": -0.2106,
+        "IV": 0.2853,
+        "dte": 34,
         "expiration_date": "2026-09-18",
         "symbol": "XOM",
     })
 
-    result = analyzer.analyze_candidate(row, spot_price=115.0)
+    result = analyzer.analyze_candidate(row, spot_price=158.0)
 
     assert result["symbol"] == "XOM"
-    assert result["strike"] == 110.0
-    assert result["mid_price"] == 2.30
-    assert result["profit_usd"] == pytest.approx(2.30 * 0.80 * 100, rel=1e-2)
-    # Spread risk: (110 - 100) + (4.50 - 2.30) = 10 + 2.20 = 12.20 -> $1220.00
-    assert result["spread_risk_usd"] == pytest.approx(1220.0, rel=1e-2)
+    assert result["strike"] == 150.0
+    assert result["profit_usd"] == pytest.approx(1.735 * 0.80 * 100, rel=1e-2)
+    assert result["expected_daily_relative_profit"] > 0

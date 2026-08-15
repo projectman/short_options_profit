@@ -1,7 +1,10 @@
-"""Diagonal spread analyzer and short options profitability engine with YAML rules support."""
+"""Diagonal spread analyzer and short options profitability engine.
+
+Rules and basis option positions are loaded directly from rules.yaml (Single Source of Truth).
+"""
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple, Union
 import numpy as np
@@ -31,63 +34,66 @@ class ShortOptionsAnalyzer:
 
 @dataclass
 class LongOptionPosition:
-    """Represents the basis long option position."""
-    symbol: str = "UPS"
-    option_type: str = "Put"
-    strike: float = 80.0
-    expiration_date: str = "2027-06-17"
-    cost_basis: float = 3.37  # Purchase price per share ($3.37)
+    """Data structure representing the basis long option position loaded from configuration."""
+    symbol: str
+    option_type: str
+    strike: float
+    expiration_date: str
+    cost_basis: float
     contracts: int = 1
 
 
 @dataclass
 class StrategyRules:
-    """Configurable rules and parameters loaded from rules.yaml."""
-    min_delta: float = 0.10
-    max_delta: float = 0.55
-    require_strike_less_than_spot: bool = False
-    option_type: str = "Put"
-    require_positive_mid: bool = True
-    target_yield: float = 0.80
-    target_residual_ratio: float = 0.20
-    risk_free_rate: float = 0.045
-    basis_long: LongOptionPosition = field(default_factory=LongOptionPosition)
+    """Strategy rules loaded directly from rules.yaml."""
+    min_delta: float
+    max_delta: float
+    require_strike_less_than_spot: bool
+    option_type: str
+    require_positive_mid: bool
+    target_yield: float
+    target_residual_ratio: float
+    risk_free_rate: float
+    basis_long: LongOptionPosition
 
     @classmethod
     def from_yaml(cls, path: Union[str, Path] = "rules.yaml") -> "StrategyRules":
-        """Load strategy rules from a YAML configuration file."""
+        """Load strategy configuration strictly from a YAML file."""
         file_path = Path(path)
         if not file_path.exists():
-            return cls()
+            raise FileNotFoundError(f"Configuration file not found: {file_path.resolve()}")
 
         with open(file_path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
+            data = yaml.safe_load(f)
 
-        delta_cfg = data.get("delta_filter", {})
-        strike_cfg = data.get("strike_filter", {})
-        opt_cfg = data.get("option_selection", {})
-        val_cfg = data.get("valuation", {})
-        profit_cfg = data.get("profit_target", {})
-        basis_cfg = data.get("basis_long", {})
+        if not isinstance(data, dict):
+            raise ValueError(f"Invalid YAML configuration format in {file_path}")
+
+        delta_cfg = data["delta_filter"]
+        strike_cfg = data["strike_filter"]
+        opt_cfg = data["option_selection"]
+        val_cfg = data["valuation"]
+        profit_cfg = data["profit_target"]
+        basis_cfg = data["basis_long"]
 
         basis_long = LongOptionPosition(
-            symbol=basis_cfg.get("symbol", "UPS"),
-            option_type=basis_cfg.get("option_type", "Put"),
-            strike=float(basis_cfg.get("strike", 80.0)),
-            expiration_date=str(basis_cfg.get("expiration_date", "2027-06-17")),
-            cost_basis=float(basis_cfg.get("cost_basis", 3.37)),
+            symbol=str(basis_cfg["symbol"]),
+            option_type=str(basis_cfg["option_type"]),
+            strike=float(basis_cfg["strike"]),
+            expiration_date=str(basis_cfg["expiration_date"]),
+            cost_basis=float(basis_cfg["cost_basis"]),
             contracts=int(basis_cfg.get("contracts", 1)),
         )
 
         return cls(
-            min_delta=float(delta_cfg.get("min_delta", 0.10)),
-            max_delta=float(delta_cfg.get("max_delta", 0.55)),
-            require_strike_less_than_spot=bool(strike_cfg.get("require_strike_less_than_spot", False)),
-            option_type=opt_cfg.get("option_type", "Put"),
-            require_positive_mid=bool(opt_cfg.get("require_positive_mid", True)),
-            target_yield=float(profit_cfg.get("target_yield", 0.80)),
-            target_residual_ratio=float(profit_cfg.get("target_residual_ratio", 0.20)),
-            risk_free_rate=float(val_cfg.get("risk_free_rate", 0.045)),
+            min_delta=float(delta_cfg["min_delta"]),
+            max_delta=float(delta_cfg["max_delta"]),
+            require_strike_less_than_spot=bool(strike_cfg["require_strike_less_than_spot"]),
+            option_type=str(opt_cfg["option_type"]),
+            require_positive_mid=bool(opt_cfg["require_positive_mid"]),
+            target_yield=float(profit_cfg["target_yield"]),
+            target_residual_ratio=float(profit_cfg["target_residual_ratio"]),
+            risk_free_rate=float(val_cfg["risk_free_rate"]),
             basis_long=basis_long,
         )
 
@@ -97,20 +103,11 @@ class DiagonalSpreadAnalyzer:
 
     def __init__(
         self,
-        basis_long: Optional[LongOptionPosition] = None,
-        target_yield: float = 0.80,
-        risk_free_rate: float = 0.045,
         rules: Optional[StrategyRules] = None,
+        config_path: Union[str, Path] = "rules.yaml",
     ):
-        self.rules = rules or StrategyRules()
-        if basis_long:
-            self.rules.basis_long = basis_long
-        if target_yield:
-            self.rules.target_yield = target_yield
-            self.rules.target_residual_ratio = 1.0 - target_yield
-        if risk_free_rate:
-            self.rules.risk_free_rate = risk_free_rate
-
+        # Load directly from YAML if no rules object is explicitly provided
+        self.rules = rules or StrategyRules.from_yaml(config_path)
         self.basis_long = self.rules.basis_long
         self.target_yield = self.rules.target_yield
         self.target_residual_ratio = self.rules.target_residual_ratio
@@ -134,7 +131,7 @@ class DiagonalSpreadAnalyzer:
 
         data = df.copy()
 
-        # Filter to target Option Type (e.g. Put)
+        # Filter to target Option Type from YAML (e.g. Put)
         if "Type" in data.columns:
             puts = data[data["Type"].str.lower() == self.rules.option_type.lower()].copy()
         else:
@@ -164,7 +161,7 @@ class DiagonalSpreadAnalyzer:
             delta_in_range = min_d <= abs_delta <= max_d
             valid_mid = mid > 0 if self.rules.require_positive_mid else True
 
-            # If rule requires strike < spot:
+            # Evaluate filter conditions
             if req_otm and not is_otm:
                 reasons_excluded.append(f"ITM/ATM (Strike {strike:.2f} >= Spot {spot_price:.2f})")
             if abs_delta < min_d:
@@ -212,11 +209,11 @@ class DiagonalSpreadAnalyzer:
         intrinsic_value = max(0.0, strike - spot_price)
         extrinsic_value = max(0.0, mid_price - intrinsic_value)
 
-        # Target profit: 80% of extrinsic value
+        # Target profit: configured yield (e.g. 80%) of extrinsic value
         target_profit_per_share = self.target_yield * extrinsic_value
         target_profit_usd = target_profit_per_share * 100.0  # 1 contract = 100 shares
 
-        # Target option price (when option retains only 20% of its extrinsic value + intrinsic value)
+        # Target option price (when option retains only configured residual extrinsic value + intrinsic value)
         target_price = intrinsic_value + self.target_residual_ratio * extrinsic_value
 
         # Calculate days required to reach target price via theta decay (holding spot & IV constant)
@@ -237,7 +234,7 @@ class DiagonalSpreadAnalyzer:
 
         # Risk calculation for diagonal spread on expiration date:
         # Max risk per share = (Short Strike - Long Strike) + (Long Cost Basis - Short Mid Premium)
-        # For UPS 80P basis: (Strike - 80) + (3.37 - Mid)
+        # Using long put basis from YAML rules
         strike_diff = max(0.0, strike - self.basis_long.strike)
         net_debit = self.basis_long.cost_basis - mid_price
         spread_risk_per_share = strike_diff + net_debit

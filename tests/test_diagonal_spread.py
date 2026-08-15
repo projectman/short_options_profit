@@ -11,10 +11,11 @@ def test_strategy_rules_from_yaml():
     assert rules.basis_long.symbol == "UPS"
     assert rules.basis_long.strike == 80.0
     assert rules.basis_long.cost_basis == 3.37
+    assert rules.basis_long.expiration_date == "2027-06-17"
 
 
 def test_diagonal_spread_analyzer():
-    rules = StrategyRules(min_delta=0.10, max_delta=0.55, require_strike_less_than_spot=False)
+    rules = StrategyRules.from_yaml("rules.yaml")
     analyzer = DiagonalSpreadAnalyzer(rules=rules)
 
     # Test candidate row

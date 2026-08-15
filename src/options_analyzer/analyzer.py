@@ -299,6 +299,7 @@ class DiagonalSpreadAnalyzer:
             "abs_delta": abs_delta,
             "short_put_index": short_put_index,
             "expected_daily_relative_profit": expected_daily_rel_profit_pct,
+            "daily_relative_profit": nominal_daily_rel_profit_pct,
             "p_win_pct": round(p_win * 100, 2),
             "days_to_target": round(days_to_target, 2),
             "profit_usd": round(target_profit_usd, 2),

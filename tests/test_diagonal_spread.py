@@ -53,11 +53,14 @@ def test_diagonal_spread_analyzer_ups():
     assert result["spread_risk_usd"] == pytest.approx(2178.0, rel=1e-2)
     assert result["days_to_target"] > 0
     
-    # Expected Daily Relative Profit = (1 - 0.2873) * nominal_daily_profit%
-    p_win = 1.0 - 0.2873
-    assert result["p_win_pct"] == pytest.approx(p_win * 100, rel=1e-2)
+    # Both daily_relative_profit and expected_daily_relative_profit must be present
+    assert "daily_relative_profit" in result
+    assert "expected_daily_relative_profit" in result
+    assert result["daily_relative_profit"] > 0
     assert result["expected_daily_relative_profit"] > 0
-    assert result["expected_daily_relative_profit"] < result["daily_profit_usd"] / result["spread_risk_usd"] * 100
+    assert result["expected_daily_relative_profit"] == pytest.approx(
+        result["daily_relative_profit"] * (1 - 0.2873), rel=1e-3
+    )
 
 
 def test_diagonal_spread_analyzer_xom():
@@ -82,4 +85,5 @@ def test_diagonal_spread_analyzer_xom():
     assert result["symbol"] == "XOM"
     assert result["strike"] == 150.0
     assert result["profit_usd"] == pytest.approx(1.735 * 0.80 * 100, rel=1e-2)
+    assert result["daily_relative_profit"] > 0
     assert result["expected_daily_relative_profit"] > 0

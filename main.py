@@ -49,10 +49,6 @@ def process_single_underlying(
     analyzer = DiagonalSpreadAnalyzer(basis_long=basis_pos, rules=rules)
     results_df, diag_df = analyzer.analyze_dataset(df_symbol, spot_price=spot_price, symbol=symbol)
 
-    # Save per-symbol diagnostics
-    diag_csv_path = output_dir / f"put_filtering_diagnostics_{symbol}.csv"
-    diag_df.to_csv(diag_csv_path, index=False)
-
     num_selected = len(results_df)
     num_excluded = len(diag_df) - num_selected
     console.print(f"  → Filter Results: [bold green]{num_selected} puts selected[/bold green], [bold red]{num_excluded} puts excluded[/bold red].")

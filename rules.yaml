@@ -7,7 +7,7 @@ delta_filter:
 
 # Strike filtering
 strike_filter:
-  require_strike_less_than_spot: false  # Removed requirement that strike must be less than underlying spot
+  require_strike_less_than_spot: false  # Allows ITM/ATM strikes
 
 # Option selection criteria
 option_selection:
@@ -24,11 +24,18 @@ profit_target:
   target_yield: 0.80           # 80% profit from existing extrinsic value
   target_residual_ratio: 0.20  # Option price reaches 20% of current mid price
 
-# Basis Long Option Position
-basis_long:
-  symbol: "UPS"
-  option_type: "Put"
-  strike: 80.0
-  expiration_date: "2027-06-17"
-  cost_basis: 3.37             # Purchase price per share ($3.37)
-  contracts: 1
+# Basis Long Option Positions (List of underlying positions)
+basis_long_positions:
+  - symbol: "UPS"
+    option_type: "Put"
+    strike: 80.0
+    expiration_date: "2027-06-17"
+    cost_basis: 3.37             # Purchase price per share ($3.37)
+    contracts: 1
+
+  - symbol: "XOM"
+    option_type: "Put"
+    strike: 100.0
+    expiration_date: "2027-06-17"
+    cost_basis: 4.50             # Purchase price per share ($4.50, editable)
+    contracts: 1

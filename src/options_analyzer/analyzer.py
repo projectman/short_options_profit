@@ -4,7 +4,7 @@ Rules and basis option positions are loaded directly from rules.yaml (Single Sou
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple, Union
 import numpy as np
@@ -34,7 +34,7 @@ class ShortOptionsAnalyzer:
 
 @dataclass
 class LongOptionPosition:
-    """Data structure representing the basis long option position loaded from configuration."""
+    """Data structure representing a basis long option position loaded from configuration."""
     symbol: str
     option_type: str
     strike: float
@@ -54,7 +54,24 @@ class StrategyRules:
     target_yield: float
     target_residual_ratio: float
     risk_free_rate: float
-    basis_long: LongOptionPosition
+    basis_long_positions: List[LongOptionPosition] = field(default_factory=list)
+
+    @property
+    def basis_long(self) -> Optional[LongOptionPosition]:
+        """Returns the first basis long position if available."""
+        return self.basis_long_positions[0] if self.basis_long_positions else None
+
+    def get_basis_position(self, symbol: str) -> Optional[LongOptionPosition]:
+        """Find the basis long position for a given ticker symbol."""
+        sym_clean = symbol.upper().strip()
+        for pos in self.basis_long_positions:
+            if pos.symbol.upper().strip() == sym_clean:
+                return pos
+        return None
+
+    def list_symbols(self) -> List[str]:
+        """List all symbols configured in basis_long_positions."""
+        return [pos.symbol.upper() for pos in self.basis_long_positions]
 
     @classmethod
     def from_yaml(cls, path: Union[str, Path] = "rules.yaml") -> "StrategyRules":
@@ -74,16 +91,28 @@ class StrategyRules:
         opt_cfg = data["option_selection"]
         val_cfg = data["valuation"]
         profit_cfg = data["profit_target"]
-        basis_cfg = data["basis_long"]
 
-        basis_long = LongOptionPosition(
-            symbol=str(basis_cfg["symbol"]),
-            option_type=str(basis_cfg["option_type"]),
-            strike=float(basis_cfg["strike"]),
-            expiration_date=str(basis_cfg["expiration_date"]),
-            cost_basis=float(basis_cfg["cost_basis"]),
-            contracts=int(basis_cfg.get("contracts", 1)),
-        )
+        # Support both list 'basis_long_positions' and single 'basis_long'
+        positions_raw = data.get("basis_long_positions") or data.get("basis_long")
+        if isinstance(positions_raw, dict):
+            positions_raw = [positions_raw]
+        elif not isinstance(positions_raw, list):
+            positions_raw = []
+
+        basis_positions: List[LongOptionPosition] = []
+        for b_dict in positions_raw:
+            pos = LongOptionPosition(
+                symbol=str(b_dict["symbol"]).upper().strip(),
+                option_type=str(b_dict.get("option_type", "Put")),
+                strike=float(b_dict["strike"]),
+                expiration_date=str(b_dict["expiration_date"]),
+                cost_basis=float(b_dict["cost_basis"]),
+                contracts=int(b_dict.get("contracts", 1)),
+            )
+            basis_positions.append(pos)
+
+        if not basis_positions:
+            raise ValueError("No basis long positions found in configuration file.")
 
         return cls(
             min_delta=float(delta_cfg["min_delta"]),
@@ -94,7 +123,7 @@ class StrategyRules:
             target_yield=float(profit_cfg["target_yield"]),
             target_residual_ratio=float(profit_cfg["target_residual_ratio"]),
             risk_free_rate=float(val_cfg["risk_free_rate"]),
-            basis_long=basis_long,
+            basis_long_positions=basis_positions,
         )
 
 
@@ -103,12 +132,15 @@ class DiagonalSpreadAnalyzer:
 
     def __init__(
         self,
+        basis_long: Optional[LongOptionPosition] = None,
         rules: Optional[StrategyRules] = None,
         config_path: Union[str, Path] = "rules.yaml",
     ):
-        # Load directly from YAML if no rules object is explicitly provided
         self.rules = rules or StrategyRules.from_yaml(config_path)
-        self.basis_long = self.rules.basis_long
+        self.basis_long = basis_long or self.rules.basis_long
+        if self.basis_long is None:
+            raise ValueError("A valid basis_long position is required for DiagonalSpreadAnalyzer.")
+
         self.target_yield = self.rules.target_yield
         self.target_residual_ratio = self.rules.target_residual_ratio
         self.risk_free_rate = self.rules.risk_free_rate
@@ -120,6 +152,7 @@ class DiagonalSpreadAnalyzer:
         min_delta: Optional[float] = None,
         max_delta: Optional[float] = None,
         require_strike_less_than_spot: Optional[bool] = None,
+        symbol: Optional[str] = None,
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """Filters candidate puts and returns both selected candidates and full diagnostics log."""
         if df.empty:
@@ -128,8 +161,13 @@ class DiagonalSpreadAnalyzer:
         min_d = min_delta if min_delta is not None else self.rules.min_delta
         max_d = max_delta if max_delta is not None else self.rules.max_delta
         req_otm = require_strike_less_than_spot if require_strike_less_than_spot is not None else self.rules.require_strike_less_than_spot
+        target_symbol = (symbol or self.basis_long.symbol).upper().strip()
 
         data = df.copy()
+
+        # Filter by symbol if symbol column is present
+        if "symbol" in data.columns:
+            data = data[data["symbol"].str.upper() == target_symbol].copy()
 
         # Filter to target Option Type from YAML (e.g. Put)
         if "Type" in data.columns:
@@ -175,6 +213,7 @@ class DiagonalSpreadAnalyzer:
             reason_str = f"Meets criteria (Delta {min_d:.2f}-{max_d:.2f})" if status == "SELECTED" else "; ".join(reasons_excluded)
 
             rec = {
+                "symbol": target_symbol,
                 "expiration_date": exp,
                 "dte": dte,
                 "strike": strike,
@@ -203,7 +242,7 @@ class DiagonalSpreadAnalyzer:
         delta = float(row["Delta"])
         abs_delta = abs(delta)
         exp_date = str(row.get("expiration_date", "Unknown"))
-        symbol = str(row.get("symbol", self.basis_long.symbol))
+        symbol = str(row.get("symbol", self.basis_long.symbol)).upper()
 
         # Intrinsic & Extrinsic values
         intrinsic_value = max(0.0, strike - spot_price)
@@ -247,6 +286,7 @@ class DiagonalSpreadAnalyzer:
         short_put_index = f"{symbol} {exp_date} {strike:.2f}P"
 
         return {
+            "symbol": symbol,
             "delta": delta,
             "abs_delta": abs_delta,
             "short_put_index": short_put_index,
@@ -271,6 +311,7 @@ class DiagonalSpreadAnalyzer:
         min_delta: Optional[float] = None,
         max_delta: Optional[float] = None,
         require_strike_less_than_spot: Optional[bool] = None,
+        symbol: Optional[str] = None,
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """Analyze all valid candidate short puts in dataset, returning (results_df, diagnostics_df)."""
         candidates, diag_df = self.inspect_and_filter_candidates(
@@ -279,6 +320,7 @@ class DiagonalSpreadAnalyzer:
             min_delta=min_delta,
             max_delta=max_delta,
             require_strike_less_than_spot=require_strike_less_than_spot,
+            symbol=symbol,
         )
         if candidates.empty:
             return pd.DataFrame(), diag_df

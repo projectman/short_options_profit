@@ -1,17 +1,21 @@
 import pytest
 import pandas as pd
-from options_analyzer.analyzer import DiagonalSpreadAnalyzer, LongOptionPosition
+from options_analyzer.analyzer import DiagonalSpreadAnalyzer, LongOptionPosition, StrategyRules
+
+
+def test_strategy_rules_from_yaml():
+    rules = StrategyRules.from_yaml("rules.yaml")
+    assert rules.min_delta == 0.10
+    assert rules.max_delta == 0.55
+    assert rules.require_strike_less_than_spot is False
+    assert rules.basis_long.symbol == "UPS"
+    assert rules.basis_long.strike == 80.0
+    assert rules.basis_long.cost_basis == 3.37
 
 
 def test_diagonal_spread_analyzer():
-    basis_long = LongOptionPosition(
-        symbol="UPS",
-        option_type="Put",
-        strike=80.0,
-        expiration_date="2027-06-17",
-        cost_basis=3.37,
-    )
-    analyzer = DiagonalSpreadAnalyzer(basis_long=basis_long)
+    rules = StrategyRules(min_delta=0.10, max_delta=0.55, require_strike_less_than_spot=False)
+    analyzer = DiagonalSpreadAnalyzer(rules=rules)
 
     # Test candidate row
     row = pd.Series({

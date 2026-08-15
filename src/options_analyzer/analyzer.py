@@ -1,10 +1,12 @@
-"""Diagonal spread analyzer and short options profitability engine with rich logging and diagnostics."""
+"""Diagonal spread analyzer and short options profitability engine with YAML rules support."""
 
 import logging
-from dataclasses import dataclass
-from typing import Dict, Any, List, Optional, Tuple
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, Any, List, Optional, Tuple, Union
 import numpy as np
 import pandas as pd
+import yaml
 
 from options_analyzer.black_scholes import find_days_to_target_put
 
@@ -38,6 +40,58 @@ class LongOptionPosition:
     contracts: int = 1
 
 
+@dataclass
+class StrategyRules:
+    """Configurable rules and parameters loaded from rules.yaml."""
+    min_delta: float = 0.10
+    max_delta: float = 0.55
+    require_strike_less_than_spot: bool = False
+    option_type: str = "Put"
+    require_positive_mid: bool = True
+    target_yield: float = 0.80
+    target_residual_ratio: float = 0.20
+    risk_free_rate: float = 0.045
+    basis_long: LongOptionPosition = field(default_factory=LongOptionPosition)
+
+    @classmethod
+    def from_yaml(cls, path: Union[str, Path] = "rules.yaml") -> "StrategyRules":
+        """Load strategy rules from a YAML configuration file."""
+        file_path = Path(path)
+        if not file_path.exists():
+            return cls()
+
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+
+        delta_cfg = data.get("delta_filter", {})
+        strike_cfg = data.get("strike_filter", {})
+        opt_cfg = data.get("option_selection", {})
+        val_cfg = data.get("valuation", {})
+        profit_cfg = data.get("profit_target", {})
+        basis_cfg = data.get("basis_long", {})
+
+        basis_long = LongOptionPosition(
+            symbol=basis_cfg.get("symbol", "UPS"),
+            option_type=basis_cfg.get("option_type", "Put"),
+            strike=float(basis_cfg.get("strike", 80.0)),
+            expiration_date=str(basis_cfg.get("expiration_date", "2027-06-17")),
+            cost_basis=float(basis_cfg.get("cost_basis", 3.37)),
+            contracts=int(basis_cfg.get("contracts", 1)),
+        )
+
+        return cls(
+            min_delta=float(delta_cfg.get("min_delta", 0.10)),
+            max_delta=float(delta_cfg.get("max_delta", 0.55)),
+            require_strike_less_than_spot=bool(strike_cfg.get("require_strike_less_than_spot", False)),
+            option_type=opt_cfg.get("option_type", "Put"),
+            require_positive_mid=bool(opt_cfg.get("require_positive_mid", True)),
+            target_yield=float(profit_cfg.get("target_yield", 0.80)),
+            target_residual_ratio=float(profit_cfg.get("target_residual_ratio", 0.20)),
+            risk_free_rate=float(val_cfg.get("risk_free_rate", 0.045)),
+            basis_long=basis_long,
+        )
+
+
 class DiagonalSpreadAnalyzer:
     """Analyzes candidate short puts paired with a basis long put for diagonal spread profitability."""
 
@@ -46,27 +100,43 @@ class DiagonalSpreadAnalyzer:
         basis_long: Optional[LongOptionPosition] = None,
         target_yield: float = 0.80,
         risk_free_rate: float = 0.045,
+        rules: Optional[StrategyRules] = None,
     ):
-        self.basis_long = basis_long or LongOptionPosition()
-        self.target_yield = target_yield
-        self.target_residual_ratio = 1.0 - target_yield  # 0.20 (20% of initial mid price)
-        self.risk_free_rate = risk_free_rate
+        self.rules = rules or StrategyRules()
+        if basis_long:
+            self.rules.basis_long = basis_long
+        if target_yield:
+            self.rules.target_yield = target_yield
+            self.rules.target_residual_ratio = 1.0 - target_yield
+        if risk_free_rate:
+            self.rules.risk_free_rate = risk_free_rate
+
+        self.basis_long = self.rules.basis_long
+        self.target_yield = self.rules.target_yield
+        self.target_residual_ratio = self.rules.target_residual_ratio
+        self.risk_free_rate = self.rules.risk_free_rate
 
     def inspect_and_filter_candidates(
-        self, df: pd.DataFrame, spot_price: float, min_delta: float = 0.15, max_delta: float = 0.55
+        self,
+        df: pd.DataFrame,
+        spot_price: float,
+        min_delta: Optional[float] = None,
+        max_delta: Optional[float] = None,
+        require_strike_less_than_spot: Optional[bool] = None,
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-        """Filters candidate puts and returns both:
-        1. Selected candidates dataframe
-        2. Full diagnostics log dataframe with reasons for inclusion/exclusion for every put.
-        """
+        """Filters candidate puts and returns both selected candidates and full diagnostics log."""
         if df.empty:
             return pd.DataFrame(), pd.DataFrame()
 
+        min_d = min_delta if min_delta is not None else self.rules.min_delta
+        max_d = max_delta if max_delta is not None else self.rules.max_delta
+        req_otm = require_strike_less_than_spot if require_strike_less_than_spot is not None else self.rules.require_strike_less_than_spot
+
         data = df.copy()
 
-        # Filter to Puts
+        # Filter to target Option Type (e.g. Put)
         if "Type" in data.columns:
-            puts = data[data["Type"].str.lower() == "put"].copy()
+            puts = data[data["Type"].str.lower() == self.rules.option_type.lower()].copy()
         else:
             puts = data.copy()
 
@@ -91,20 +161,21 @@ class DiagonalSpreadAnalyzer:
 
             reasons_excluded = []
             is_otm = strike < spot_price
-            delta_in_range = min_delta <= abs_delta <= max_delta
-            valid_mid = mid > 0
+            delta_in_range = min_d <= abs_delta <= max_d
+            valid_mid = mid > 0 if self.rules.require_positive_mid else True
 
-            if not is_otm:
+            # If rule requires strike < spot:
+            if req_otm and not is_otm:
                 reasons_excluded.append(f"ITM/ATM (Strike {strike:.2f} >= Spot {spot_price:.2f})")
-            if abs_delta < min_delta:
-                reasons_excluded.append(f"Delta |{delta:+.4f}| < {min_delta}")
-            elif abs_delta > max_delta:
-                reasons_excluded.append(f"Delta |{delta:+.4f}| > {max_delta}")
+            if abs_delta < min_d:
+                reasons_excluded.append(f"Delta |{delta:+.4f}| < {min_d:.2f}")
+            elif abs_delta > max_d:
+                reasons_excluded.append(f"Delta |{delta:+.4f}| > {max_d:.2f}")
             if not valid_mid:
                 reasons_excluded.append("Mid Price <= 0")
 
-            status = "SELECTED" if (is_otm and delta_in_range and valid_mid) else "EXCLUDED"
-            reason_str = "Meets all criteria (OTM, Delta 0.15-0.55)" if status == "SELECTED" else "; ".join(reasons_excluded)
+            status = "SELECTED" if (len(reasons_excluded) == 0) else "EXCLUDED"
+            reason_str = f"Meets criteria (Delta {min_d:.2f}-{max_d:.2f})" if status == "SELECTED" else "; ".join(reasons_excluded)
 
             rec = {
                 "expiration_date": exp,
@@ -137,7 +208,7 @@ class DiagonalSpreadAnalyzer:
         exp_date = str(row.get("expiration_date", "Unknown"))
         symbol = str(row.get("symbol", self.basis_long.symbol))
 
-        # Intrinsic & Extrinsic values (OTM put has 0 intrinsic)
+        # Intrinsic & Extrinsic values
         intrinsic_value = max(0.0, strike - spot_price)
         extrinsic_value = max(0.0, mid_price - intrinsic_value)
 
@@ -145,8 +216,8 @@ class DiagonalSpreadAnalyzer:
         target_profit_per_share = self.target_yield * extrinsic_value
         target_profit_usd = target_profit_per_share * 100.0  # 1 contract = 100 shares
 
-        # Target option price (when option decays to 20% of current mid price)
-        target_price = self.target_residual_ratio * mid_price
+        # Target option price (when option retains only 20% of its extrinsic value + intrinsic value)
+        target_price = intrinsic_value + self.target_residual_ratio * extrinsic_value
 
         # Calculate days required to reach target price via theta decay (holding spot & IV constant)
         days_to_target = find_days_to_target_put(
@@ -197,11 +268,20 @@ class DiagonalSpreadAnalyzer:
         }
 
     def analyze_dataset(
-        self, df: pd.DataFrame, spot_price: float, min_delta: float = 0.15, max_delta: float = 0.55
+        self,
+        df: pd.DataFrame,
+        spot_price: float,
+        min_delta: Optional[float] = None,
+        max_delta: Optional[float] = None,
+        require_strike_less_than_spot: Optional[bool] = None,
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """Analyze all valid candidate short puts in dataset, returning (results_df, diagnostics_df)."""
         candidates, diag_df = self.inspect_and_filter_candidates(
-            df, spot_price=spot_price, min_delta=min_delta, max_delta=max_delta
+            df,
+            spot_price=spot_price,
+            min_delta=min_delta,
+            max_delta=max_delta,
+            require_strike_less_than_spot=require_strike_less_than_spot,
         )
         if candidates.empty:
             return pd.DataFrame(), diag_df

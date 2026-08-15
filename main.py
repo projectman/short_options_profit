@@ -12,20 +12,39 @@ from rich.table import Table
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from options_analyzer.loader import DataLoader
-from options_analyzer.analyzer import DiagonalSpreadAnalyzer, LongOptionPosition
+from options_analyzer.analyzer import DiagonalSpreadAnalyzer, LongOptionPosition, StrategyRules
 
 
 def main():
     parser = argparse.ArgumentParser(description="Analyze diagonal spread short put candidates.")
-    parser.add_argument("--source", default="source", help="Directory containing downloaded options files")
-    parser.add_argument("--min-delta", type=float, default=0.15, help="Minimum absolute delta (default: 0.15)")
-    parser.add_argument("--max-delta", type=float, default=0.55, help="Maximum absolute delta (default: 0.55)")
-    parser.add_argument("--target-yield", type=float, default=0.80, help="Target extrinsic yield (default: 0.80)")
+    parser.add_argument("--config", default="rules.yaml", help="Path to YAML rules configuration file (default: rules.yaml)")
+    parser.add_argument("--source", default="source", help="Directory containing downloaded options files (default: source)")
+    parser.add_argument("--min-delta", type=float, default=None, help="Override minimum absolute delta (e.g. 0.10)")
+    parser.add_argument("--max-delta", type=float, default=None, help="Override maximum absolute delta (e.g. 0.55)")
+    parser.add_argument("--require-otm", action="store_true", help="Require strike to be strictly less than spot price")
+    parser.add_argument("--target-yield", type=float, default=None, help="Target extrinsic yield (default: from config)")
     parser.add_argument("--show-all-puts", action="store_true", help="Show full diagnostics of all scanned put options")
     args = parser.parse_args()
 
     console = Console()
     console.print("\n[bold cyan]═══ Short Options Profit & Diagonal Spread Selection ═══[/bold cyan]\n")
+
+    # Load configuration from YAML rules file
+    rules = StrategyRules.from_yaml(args.config)
+    if args.min_delta is not None:
+        rules.min_delta = args.min_delta
+    if args.max_delta is not None:
+        rules.max_delta = args.max_delta
+    if args.require_otm:
+        rules.require_strike_less_than_spot = True
+    if args.target_yield is not None:
+        rules.target_yield = args.target_yield
+        rules.target_residual_ratio = 1.0 - args.target_yield
+
+    console.print(f"[bold blue]Configuration loaded from:[/bold blue] [cyan]{args.config}[/cyan]")
+    console.print(f"  • Delta Range: [bold green]{rules.min_delta:.2f} - {rules.max_delta:.2f}[/bold green]")
+    console.print(f"  • Require Strike < Spot: [bold magenta]{rules.require_strike_less_than_spot}[/bold magenta]")
+    console.print(f"  • Profit Target: [bold green]{rules.target_yield * 100:.0f}%[/bold green] of extrinsic value\n")
 
     loader = DataLoader(args.source)
     files = loader.list_files()
@@ -55,35 +74,23 @@ def main():
     console.print(f"\n[bold blue]Step 2: Underlying Asset & Long Basis Setup[/bold blue]")
     console.print(f"  • Estimated Spot Price (UPS): [bold green]${spot_price:.2f}[/bold green]")
 
-    # Configure Basis Long Position
-    basis_long = LongOptionPosition(
-        symbol="UPS",
-        option_type="Put",
-        strike=80.0,
-        expiration_date="2027-06-17",
-        cost_basis=3.37,
-    )
+    # Basis Long Position from rules
+    basis_long = rules.basis_long
     console.print(
         f"  • Basis Long Put: [bold yellow]{basis_long.symbol} ${basis_long.strike:.2f}P[/bold yellow] "
-        f"Exp: [bold white]{basis_long.expiration_date}[/bold white] | Cost Basis: [bold green]${basis_long.cost_basis:.2f}[/bold green] / share ($337.00/contract)"
+        f"Exp: [bold white]{basis_long.expiration_date}[/bold white] | Cost Basis: [bold green]${basis_long.cost_basis:.2f}[/bold green] / share (${basis_long.cost_basis * 100:.2f}/contract)"
     )
 
     # Initialize Strategy Analyzer
-    analyzer = DiagonalSpreadAnalyzer(
-        basis_long=basis_long,
-        target_yield=args.target_yield,
-        risk_free_rate=0.045,
-    )
+    analyzer = DiagonalSpreadAnalyzer(rules=rules)
 
     console.print(f"\n[bold blue]Step 3: Filtering Candidate Short Puts[/bold blue]")
-    console.print(f"  • Filter 1: [bold]Option Type == 'Put'[/bold]")
-    console.print(f"  • Filter 2: [bold]OTM Only (Strike < Spot Price ${spot_price:.2f})[/bold]")
-    console.print(f"  • Filter 3: [bold]Delta in range [{args.min_delta:.2f}, {args.max_delta:.2f}][/bold]")
+    console.print(f"  • Filter 1: [bold]Option Type == '{rules.option_type}'[/bold]")
+    console.print(f"  • Filter 2: [bold]Require Strike < Spot: {rules.require_strike_less_than_spot}[/bold]")
+    console.print(f"  • Filter 3: [bold]Delta in range [{rules.min_delta:.2f}, {rules.max_delta:.2f}][/bold]")
     console.print(f"  • Filter 4: [bold]Mid Price > 0[/bold]")
 
-    results_df, diag_df = analyzer.analyze_dataset(
-        df_raw, spot_price=spot_price, min_delta=args.min_delta, max_delta=args.max_delta
-    )
+    results_df, diag_df = analyzer.analyze_dataset(df_raw, spot_price=spot_price)
 
     # Create output directory
     output_dir = Path("output")
@@ -99,7 +106,7 @@ def main():
 
     # Display Diagnostic Breakdown Table of Puts near threshold
     diag_table = Table(
-        title="Put Options Scan & Filtering Breakdown (Strikes near Spot / Relevant Deltas)",
+        title="Put Options Scan & Filtering Breakdown (Strikes near Delta Bounds)",
         title_style="bold yellow",
         header_style="bold cyan",
         show_lines=True,
@@ -112,8 +119,8 @@ def main():
     diag_table.add_column("Status", justify="center")
     diag_table.add_column("Filter Decision / Reason", justify="left")
 
-    # Focus table on relevant strikes (e.g. Strike >= 75 or Delta >= 0.05)
-    relevant_diag = diag_df[(diag_df["strike"] >= 75.0) | (diag_df["abs_delta"] >= 0.05)].copy()
+    # Filter table for display: strikes between 75 and 120 or delta >= 0.05
+    relevant_diag = diag_df[(diag_df["strike"] >= 75.0) & (diag_df["strike"] <= 125.0)].copy()
     if args.show_all_puts:
         relevant_diag = diag_df.copy()
 
@@ -142,7 +149,6 @@ def main():
     # 3. daily_relative_profit
     # 4. days_to_target
     # 5. profit_usd
-    # followed by supporting columns for analysis
     display_cols = [
         "delta",
         "short_put_index",
@@ -170,7 +176,8 @@ def main():
 
 **Underlying**: UPS ($ {spot_price:.2f})  
 **Basis Long Put**: UPS $80.00P Exp: 2027-06-17 (Cost: $3.37 / share)  
-**Strategy**: Diagonal Put Spread with 80% Extrinsic Profit Target (20% residual value decay)  
+**Strategy**: Diagonal Put Spread with {rules.target_yield * 100:.0f}% Extrinsic Profit Target (20% residual extrinsic decay)  
+**Delta Filter**: [{rules.min_delta:.2f}, {rules.max_delta:.2f}]  
 **Valuation Rule**: Always use Medium price for Bid/Ask: $\\text{{Mid}} = \\frac{{\\text{{Bid}} + \\text{{Ask}}}}{{2}}$  
 
 ## Candidate Short Puts (Sorted by Delta)

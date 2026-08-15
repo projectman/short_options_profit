@@ -1,12 +1,14 @@
-"""Diagonal spread analyzer and short options profitability engine."""
+"""Diagonal spread analyzer and short options profitability engine with rich logging and diagnostics."""
 
+import logging
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from options_analyzer.black_scholes import find_days_to_target_put, black_scholes_put_price
+from options_analyzer.black_scholes import find_days_to_target_put
+
+logger = logging.getLogger("options_analyzer")
 
 
 class ShortOptionsAnalyzer:
@@ -50,35 +52,79 @@ class DiagonalSpreadAnalyzer:
         self.target_residual_ratio = 1.0 - target_yield  # 0.20 (20% of initial mid price)
         self.risk_free_rate = risk_free_rate
 
-    def filter_short_put_candidates(
+    def inspect_and_filter_candidates(
         self, df: pd.DataFrame, spot_price: float, min_delta: float = 0.15, max_delta: float = 0.55
-    ) -> pd.DataFrame:
-        """Filter for put options with strike below spot and absolute delta between min_delta and max_delta."""
+    ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """Filters candidate puts and returns both:
+        1. Selected candidates dataframe
+        2. Full diagnostics log dataframe with reasons for inclusion/exclusion for every put.
+        """
         if df.empty:
-            return pd.DataFrame()
+            return pd.DataFrame(), pd.DataFrame()
 
         data = df.copy()
 
-        # Filter by option type: Put
+        # Filter to Puts
         if "Type" in data.columns:
-            data = data[data["Type"].str.lower() == "put"]
-
-        # Ensure numeric delta
-        if "Delta" in data.columns:
-            data["abs_delta"] = data["Delta"].abs()
+            puts = data[data["Type"].str.lower() == "put"].copy()
         else:
-            return pd.DataFrame()
+            puts = data.copy()
 
-        # Condition 1: Strike below stock price (OTM puts)
-        data = data[data["Strike"] < spot_price]
+        if puts.empty:
+            return pd.DataFrame(), pd.DataFrame()
 
-        # Condition 2: Delta in [min_delta, max_delta]
-        data = data[(data["abs_delta"] >= min_delta) & (data["abs_delta"] <= max_delta)]
+        if "Delta" in puts.columns:
+            puts["abs_delta"] = puts["Delta"].abs()
+        else:
+            puts["abs_delta"] = np.nan
 
-        # Must have valid positive Mid price
-        data = data[data["Mid"] > 0]
+        diagnostic_records = []
+        selected_records = []
 
-        return data.copy()
+        for idx, row in puts.iterrows():
+            strike = float(row.get("Strike", 0.0))
+            delta = float(row.get("Delta", 0.0)) if not pd.isna(row.get("Delta")) else 0.0
+            abs_delta = abs(delta)
+            mid = float(row.get("Mid", 0.0)) if not pd.isna(row.get("Mid")) else 0.0
+            exp = str(row.get("expiration_date", "Unknown"))
+            dte = int(row.get("dte", 0))
+
+            reasons_excluded = []
+            is_otm = strike < spot_price
+            delta_in_range = min_delta <= abs_delta <= max_delta
+            valid_mid = mid > 0
+
+            if not is_otm:
+                reasons_excluded.append(f"ITM/ATM (Strike {strike:.2f} >= Spot {spot_price:.2f})")
+            if abs_delta < min_delta:
+                reasons_excluded.append(f"Delta |{delta:+.4f}| < {min_delta}")
+            elif abs_delta > max_delta:
+                reasons_excluded.append(f"Delta |{delta:+.4f}| > {max_delta}")
+            if not valid_mid:
+                reasons_excluded.append("Mid Price <= 0")
+
+            status = "SELECTED" if (is_otm and delta_in_range and valid_mid) else "EXCLUDED"
+            reason_str = "Meets all criteria (OTM, Delta 0.15-0.55)" if status == "SELECTED" else "; ".join(reasons_excluded)
+
+            rec = {
+                "expiration_date": exp,
+                "dte": dte,
+                "strike": strike,
+                "delta": delta,
+                "abs_delta": abs_delta,
+                "mid": mid,
+                "status": status,
+                "reason": reason_str,
+            }
+            diagnostic_records.append(rec)
+
+            if status == "SELECTED":
+                selected_records.append(row)
+
+        diag_df = pd.DataFrame(diagnostic_records)
+        selected_df = pd.DataFrame(selected_records) if selected_records else pd.DataFrame()
+
+        return selected_df, diag_df
 
     def analyze_candidate(self, row: pd.Series, spot_price: float) -> Dict[str, Any]:
         """Perform comprehensive pricing decay, diagonal spread risk, and daily return calculations for a short put."""
@@ -150,11 +196,15 @@ class DiagonalSpreadAnalyzer:
             "target_price": round(target_price, 4),
         }
 
-    def analyze_dataset(self, df: pd.DataFrame, spot_price: float) -> pd.DataFrame:
-        """Analyze all valid candidate short puts in the dataset and return sorted results."""
-        candidates = self.filter_short_put_candidates(df, spot_price=spot_price)
+    def analyze_dataset(
+        self, df: pd.DataFrame, spot_price: float, min_delta: float = 0.15, max_delta: float = 0.55
+    ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """Analyze all valid candidate short puts in dataset, returning (results_df, diagnostics_df)."""
+        candidates, diag_df = self.inspect_and_filter_candidates(
+            df, spot_price=spot_price, min_delta=min_delta, max_delta=max_delta
+        )
         if candidates.empty:
-            return pd.DataFrame()
+            return pd.DataFrame(), diag_df
 
         results = []
         for _, row in candidates.iterrows():
@@ -162,8 +212,6 @@ class DiagonalSpreadAnalyzer:
             results.append(metrics)
 
         result_df = pd.DataFrame(results)
-
-        # Sort by Delta (ascending by absolute delta or signed delta)
         result_df = result_df.sort_values(by="abs_delta", ascending=True).reset_index(drop=True)
 
-        return result_df
+        return result_df, diag_df

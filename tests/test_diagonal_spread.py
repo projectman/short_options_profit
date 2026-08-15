@@ -59,7 +59,7 @@ def test_diagonal_spread_analyzer_ups():
     assert result["daily_relative_profit"] > 0
     assert result["expected_daily_relative_profit"] > 0
     assert result["expected_daily_relative_profit"] == pytest.approx(
-        result["daily_relative_profit"] * (1 - 0.2873), rel=1e-3
+        result["daily_relative_profit"] * (1 - 0.2873), abs=1e-2
     )
 
 

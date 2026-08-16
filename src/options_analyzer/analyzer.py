@@ -1,6 +1,9 @@
 """Unified Options Strategy Analyzer for Diagonal Put Spreads and Cash Protected Puts (Cash Secured Puts).
 
 Single codebase providing high code reuse for pricing, decay, profit yield, and risk calculations.
+Strategy-specific profit targets:
+  - Diagonal Put Spreads: 80% target yield (decay to 20% residual extrinsic)
+  - Cash Protected Short Puts: 50% target yield (decay to 50% residual extrinsic)
 Rules and constants are loaded from rules.yaml.
 Basis long positions for diagonal spreads are loaded from basis_long_positions.csv.
 """
@@ -75,10 +78,36 @@ class StrategyRules:
     require_strike_less_than_spot: bool
     option_type: str
     require_positive_mid: bool
-    target_yield: float
-    target_residual_ratio: float
     risk_free_rate: float
+    target_yield_diagonal: float = 0.80
+    target_residual_ratio_diagonal: float = 0.20
+    target_yield_cash_protected: float = 0.50
+    target_residual_ratio_cash_protected: float = 0.50
     basis_long_positions: List[LongOptionPosition] = field(default_factory=list)
+
+    @property
+    def target_yield(self) -> float:
+        """Default target yield."""
+        return self.target_yield_diagonal
+
+    @property
+    def target_residual_ratio(self) -> float:
+        """Default target residual ratio."""
+        return self.target_residual_ratio_diagonal
+
+    def get_target_yield(self, strategy_type: Union[str, StrategyType]) -> float:
+        """Get target profit yield for the given strategy type (0.80 for diagonal, 0.50 for cash protected put)."""
+        st = str(strategy_type).lower()
+        if "cash" in st:
+            return self.target_yield_cash_protected
+        return self.target_yield_diagonal
+
+    def get_target_residual_ratio(self, strategy_type: Union[str, StrategyType]) -> float:
+        """Get target residual ratio for the given strategy type (0.20 for diagonal, 0.50 for cash protected put)."""
+        st = str(strategy_type).lower()
+        if "cash" in st:
+            return self.target_residual_ratio_cash_protected
+        return self.target_residual_ratio_diagonal
 
     @property
     def basis_long(self) -> Optional[LongOptionPosition]:
@@ -118,7 +147,22 @@ class StrategyRules:
         strike_cfg = data["strike_filter"]
         opt_cfg = data["option_selection"]
         val_cfg = data["valuation"]
-        profit_cfg = data["profit_target"]
+        profit_cfg = data.get("profit_target", {})
+
+        # Support both nested strategy targets and flat targets
+        if "diagonal_spread" in profit_cfg and isinstance(profit_cfg["diagonal_spread"], dict):
+            ty_diag = float(profit_cfg["diagonal_spread"].get("target_yield", 0.80))
+            tr_diag = float(profit_cfg["diagonal_spread"].get("target_residual_ratio", 0.20))
+        else:
+            ty_diag = float(profit_cfg.get("target_yield", 0.80))
+            tr_diag = float(profit_cfg.get("target_residual_ratio", 0.20))
+
+        if "cash_protected_put" in profit_cfg and isinstance(profit_cfg["cash_protected_put"], dict):
+            ty_cash = float(profit_cfg["cash_protected_put"].get("target_yield", 0.50))
+            tr_cash = float(profit_cfg["cash_protected_put"].get("target_residual_ratio", 0.50))
+        else:
+            ty_cash = 0.50
+            tr_cash = 0.50
 
         # Determine positions file path
         pos_csv = positions_file or data.get("positions_file", "basis_long_positions.csv")
@@ -156,8 +200,10 @@ class StrategyRules:
             require_strike_less_than_spot=bool(strike_cfg["require_strike_less_than_spot"]),
             option_type=str(opt_cfg["option_type"]),
             require_positive_mid=bool(opt_cfg["require_positive_mid"]),
-            target_yield=float(profit_cfg["target_yield"]),
-            target_residual_ratio=float(profit_cfg["target_residual_ratio"]),
+            target_yield_diagonal=ty_diag,
+            target_residual_ratio_diagonal=tr_diag,
+            target_yield_cash_protected=ty_cash,
+            target_residual_ratio_cash_protected=tr_cash,
             risk_free_rate=float(val_cfg["risk_free_rate"]),
             basis_long_positions=basis_positions,
         )
@@ -188,8 +234,9 @@ class ShortOptionsAnalyzer:
                 else StrategyType.CASH_PROTECTED_PUT
             )
 
-        self.target_yield = self.rules.target_yield
-        self.target_residual_ratio = self.rules.target_residual_ratio
+        # Strategy-specific profit target parameters
+        self.target_yield = self.rules.get_target_yield(self.strategy_type)
+        self.target_residual_ratio = self.rules.get_target_residual_ratio(self.strategy_type)
         self.risk_free_rate = self.rules.risk_free_rate
 
     @staticmethod
@@ -314,7 +361,7 @@ class ShortOptionsAnalyzer:
         # Full Profit (100% of extrinsic premium collected, in USD)
         full_profit_usd = extrinsic_value * 100.0
 
-        # Target Profit (configured yield, e.g. 80% of extrinsic value)
+        # Target Profit (configured yield: 80% for diagonal, 50% for cash protected put)
         target_profit_per_share = self.target_yield * extrinsic_value
         target_profit_usd = target_profit_per_share * 100.0  # 1 contract = 100 shares
 
@@ -382,7 +429,7 @@ class ShortOptionsAnalyzer:
             "days_to_target": round(days_to_target, 2),
             "profit_usd": round(full_profit_usd, 2),            # Full 100% Extrinsic Profit in USD
             "max_risk_usd": round(max_risk_usd, 2),            # Max Risk in USD
-            "target_profit_usd": round(target_profit_usd, 2),  # Target Profit (80% Extrinsic) in USD
+            "target_profit_usd": round(target_profit_usd, 2),  # Target Profit (50% or 80% Extrinsic) in USD
             "target_yield_pct": round(target_yield_pct, 2),    # Target Yield % = Target Profit / Max Risk
             "p_win_pct": round(p_win * 100, 2),
             "strike": strike,
@@ -394,6 +441,7 @@ class ShortOptionsAnalyzer:
             "delta_efficiency": round(delta_efficiency, 3),
             "extrinsic_value": round(extrinsic_value, 4),
             "target_price": round(target_price, 4),
+            "target_yield_ratio": self.target_yield,
             "spread_risk_usd": round(max_risk_usd, 2),          # for backward compatibility
         }
 

@@ -121,14 +121,14 @@ def test_cash_protected_put_analyzer_aapl():
     # Full Profit = 100% of extrinsic = 7.10 * 100 = $710.00
     assert result["profit_usd"] == pytest.approx(710.00, rel=1e-2)
     
-    # Target Profit = 80% of extrinsic = 7.10 * 0.80 * 100 = $568.00
-    assert result["target_profit_usd"] == pytest.approx(568.00, rel=1e-2)
+    # Target Profit = 50% of extrinsic = 7.10 * 0.50 * 100 = $355.00
+    assert result["target_profit_usd"] == pytest.approx(355.00, rel=1e-2)
     
     # Cash Protected Put Max Risk = (Strike - Mid) * 100 = (300.0 - 7.10) * 100 = $29290.00
     assert result["max_risk_usd"] == pytest.approx((300.0 - 7.10) * 100, rel=1e-2)
     
-    # Target Yield % = (568.00 / 29290.00) * 100 = 1.94%
-    assert result["target_yield_pct"] == pytest.approx((568.00 / 29290.00) * 100, rel=1e-2)
+    # Target Yield % = (355.00 / 29290.00) * 100 = 1.21%
+    assert result["target_yield_pct"] == pytest.approx((355.00 / 29290.00) * 100, rel=1e-2)
     assert result["days_to_target"] > 0
     assert result["daily_relative_profit"] > 0
     assert result["expected_daily_relative_profit"] > 0

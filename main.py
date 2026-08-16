@@ -160,10 +160,12 @@ def process_single_underlying(
         else "**Position Type**: Cash Protected Put (No protecting long position)  \n**Max Risk Formula**: $K_{{\\text{{short}}}} - \\text{{Mid}}_{{\\text{{short}}}}$ (Strike minus cost of PUT)  "
     )
 
+    target_yield_val = analyzer.target_yield
+
     md_content = f"""# Short Put Options Selection & {strategy_title} ({sym})
 
 **Underlying**: {sym} ($ {spot_price:.2f})  
-**Strategy**: {strategy_title} with {rules.target_yield * 100:.0f}% Extrinsic Profit Target  
+**Strategy**: {strategy_title} with {target_yield_val * 100:.0f}% Extrinsic Profit Target  
 {long_info}
 **Delta Filter**: [{rules.min_delta:.2f}, {rules.max_delta:.2f}]  
 **Valuation Rule**: Always use Medium price for Bid/Ask: $\\text{{Mid}} = \\frac{{\\text{{Bid}} + \\text{{Ask}}}}{{2}}$  

@@ -1,4 +1,4 @@
-# Strategy Rules & Constants for Diagonal Spread Short Options Selection
+# Strategy Rules & Constants for Short Options Selection (Diagonal Spreads & Cash Protected Puts)
 
 # Delta filtering range
 delta_filter:
@@ -19,10 +19,14 @@ valuation:
   price_method: "mid"  # Always use medium price for BID/ASK: Mid = (Bid + Ask) / 2
   risk_free_rate: 0.045
 
-# Profit Target Parameters
+# Profit Target Parameters by Strategy Type
 profit_target:
-  target_yield: 0.80           # 80% profit from existing extrinsic value
-  target_residual_ratio: 0.20  # Option price reaches 20% of current mid price
+  diagonal_spread:
+    target_yield: 0.80           # 80% profit from extrinsic value for calendar/diagonal spreads
+    target_residual_ratio: 0.20  # Option price decays to 20% residual extrinsic
+  cash_protected_put:
+    target_yield: 0.50           # 50% profit from extrinsic value for standalone short puts
+    target_residual_ratio: 0.50  # Option price decays to 50% residual extrinsic
 
 # Basis Long Positions File
 positions_file: "basis_long_positions.csv"

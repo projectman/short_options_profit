@@ -1,10 +1,28 @@
 import pytest
 import pandas as pd
-from options_analyzer.analyzer import DiagonalSpreadAnalyzer, LongOptionPosition, StrategyRules
+from options_analyzer.analyzer import (
+    DiagonalSpreadAnalyzer,
+    LongOptionPosition,
+    StrategyRules,
+    load_basis_long_positions_from_csv,
+)
+
+
+def test_load_basis_long_positions_from_csv():
+    positions = load_basis_long_positions_from_csv("basis_long_positions.csv")
+    symbols = [p.symbol for p in positions]
+    assert "UPS" in symbols
+    assert "XOM" in symbols
+    assert "PLTR" in symbols
+
+    pltr = next(p for p in positions if p.symbol == "PLTR")
+    assert pltr.strike == 200.0
+    assert pltr.cost_basis == 58.92
+    assert pltr.expiration_date == "2027-06-17"
 
 
 def test_strategy_rules_from_yaml():
-    rules = StrategyRules.from_yaml("rules.yaml")
+    rules = StrategyRules.from_yaml("rules.yaml", positions_file="basis_long_positions.csv")
     assert rules.min_delta == 0.15
     assert rules.max_delta == 0.55
     assert rules.require_strike_less_than_spot is False
@@ -13,6 +31,7 @@ def test_strategy_rules_from_yaml():
     symbols = rules.list_symbols()
     assert "UPS" in symbols
     assert "XOM" in symbols
+    assert "PLTR" in symbols
 
     ups_pos = rules.get_basis_position("UPS")
     assert ups_pos is not None
@@ -24,6 +43,11 @@ def test_strategy_rules_from_yaml():
     assert xom_pos is not None
     assert xom_pos.strike == 100.0
     assert xom_pos.expiration_date == "2027-06-17"
+
+    pltr_pos = rules.get_basis_position("PLTR")
+    assert pltr_pos is not None
+    assert pltr_pos.strike == 200.0
+    assert pltr_pos.cost_basis == 58.92
 
 
 def test_diagonal_spread_analyzer_ups():

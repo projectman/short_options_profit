@@ -1,6 +1,7 @@
 """Diagonal spread analyzer and short options profitability engine.
 
-Rules and basis option positions are loaded directly from rules.yaml (Single Source of Truth).
+Rules and constants are loaded from rules.yaml.
+Basis long positions are loaded from a dedicated CSV file (e.g. basis_long_positions.csv).
 Calculates Full Profit, Max Risk, Target Profit (80%), and Target Yield %.
 """
 
@@ -35,7 +36,7 @@ class ShortOptionsAnalyzer:
 
 @dataclass
 class LongOptionPosition:
-    """Data structure representing a basis long option position loaded from configuration."""
+    """Data structure representing a basis long option position loaded from CSV."""
     symbol: str
     option_type: str
     strike: float
@@ -44,9 +45,40 @@ class LongOptionPosition:
     contracts: int = 1
 
 
+def load_basis_long_positions_from_csv(csv_path: Union[str, Path] = "basis_long_positions.csv") -> List[LongOptionPosition]:
+    """Load basis long option positions directly from a CSV file."""
+    path = Path(csv_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Basis long positions CSV file not found: {path.resolve()}")
+
+    df = pd.read_csv(path)
+    required_cols = {"symbol", "strike", "expiration_date", "cost_basis"}
+    missing = required_cols - {c.lower() for c in df.columns}
+    if missing:
+        raise ValueError(f"Missing required columns in {csv_path}: {missing}")
+
+    # Standardize column headers to lowercase
+    col_map = {c: c.lower().strip() for c in df.columns}
+    df_clean = df.rename(columns=col_map)
+
+    positions: List[LongOptionPosition] = []
+    for _, row in df_clean.iterrows():
+        pos = LongOptionPosition(
+            symbol=str(row["symbol"]).upper().strip(),
+            option_type=str(row.get("option_type", "Put")).strip(),
+            strike=float(row["strike"]),
+            expiration_date=str(row["expiration_date"]).strip(),
+            cost_basis=float(row["cost_basis"]),
+            contracts=int(row.get("contracts", 1)) if not pd.isna(row.get("contracts", 1)) else 1,
+        )
+        positions.append(pos)
+
+    return positions
+
+
 @dataclass
 class StrategyRules:
-    """Strategy rules loaded directly from rules.yaml."""
+    """Strategy rules loaded from rules.yaml and basis long positions loaded from CSV."""
     min_delta: float
     max_delta: float
     require_strike_less_than_spot: bool
@@ -75,8 +107,12 @@ class StrategyRules:
         return [pos.symbol.upper() for pos in self.basis_long_positions]
 
     @classmethod
-    def from_yaml(cls, path: Union[str, Path] = "rules.yaml") -> "StrategyRules":
-        """Load strategy configuration strictly from a YAML file."""
+    def from_yaml(
+        cls,
+        path: Union[str, Path] = "rules.yaml",
+        positions_file: Optional[Union[str, Path]] = None,
+    ) -> "StrategyRules":
+        """Load strategy configuration from YAML and basis positions from CSV."""
         file_path = Path(path)
         if not file_path.exists():
             raise FileNotFoundError(f"Configuration file not found: {file_path.resolve()}")
@@ -93,26 +129,39 @@ class StrategyRules:
         val_cfg = data["valuation"]
         profit_cfg = data["profit_target"]
 
-        positions_raw = data.get("basis_long_positions") or data.get("basis_long")
-        if isinstance(positions_raw, dict):
-            positions_raw = [positions_raw]
-        elif not isinstance(positions_raw, list):
-            positions_raw = []
+        # Determine positions file path
+        pos_csv = positions_file or data.get("positions_file", "basis_long_positions.csv")
+        pos_csv_path = Path(pos_csv)
+        if not pos_csv_path.is_absolute():
+            # Resolve relative to yaml file parent or current working directory
+            candidate_1 = file_path.parent / pos_csv
+            candidate_2 = Path.cwd() / pos_csv
+            pos_csv_path = candidate_1 if candidate_1.exists() else candidate_2
 
         basis_positions: List[LongOptionPosition] = []
-        for b_dict in positions_raw:
-            pos = LongOptionPosition(
-                symbol=str(b_dict["symbol"]).upper().strip(),
-                option_type=str(b_dict.get("option_type", "Put")),
-                strike=float(b_dict["strike"]),
-                expiration_date=str(b_dict["expiration_date"]),
-                cost_basis=float(b_dict["cost_basis"]),
-                contracts=int(b_dict.get("contracts", 1)),
-            )
-            basis_positions.append(pos)
+        if pos_csv_path.exists():
+            basis_positions = load_basis_long_positions_from_csv(pos_csv_path)
+        else:
+            # Fallback to embedded yaml definitions if any
+            positions_raw = data.get("basis_long_positions") or data.get("basis_long")
+            if isinstance(positions_raw, dict):
+                positions_raw = [positions_raw]
+            elif not isinstance(positions_raw, list):
+                positions_raw = []
+
+            for b_dict in positions_raw:
+                pos = LongOptionPosition(
+                    symbol=str(b_dict["symbol"]).upper().strip(),
+                    option_type=str(b_dict.get("option_type", "Put")),
+                    strike=float(b_dict["strike"]),
+                    expiration_date=str(b_dict["expiration_date"]),
+                    cost_basis=float(b_dict["cost_basis"]),
+                    contracts=int(b_dict.get("contracts", 1)),
+                )
+                basis_positions.append(pos)
 
         if not basis_positions:
-            raise ValueError("No basis long positions found in configuration file.")
+            raise ValueError(f"No basis long positions found in {pos_csv_path} or configuration file.")
 
         return cls(
             min_delta=float(delta_cfg["min_delta"]),
@@ -135,8 +184,9 @@ class DiagonalSpreadAnalyzer:
         basis_long: Optional[LongOptionPosition] = None,
         rules: Optional[StrategyRules] = None,
         config_path: Union[str, Path] = "rules.yaml",
+        positions_path: Optional[Union[str, Path]] = None,
     ):
-        self.rules = rules or StrategyRules.from_yaml(config_path)
+        self.rules = rules or StrategyRules.from_yaml(config_path, positions_file=positions_path)
         self.basis_long = basis_long or self.rules.basis_long
         if self.basis_long is None:
             raise ValueError("A valid basis_long position is required for DiagonalSpreadAnalyzer.")

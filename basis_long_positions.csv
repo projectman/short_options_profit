@@ -1,0 +1,4 @@
+symbol,option_type,strike,expiration_date,cost_basis,contracts
+UPS,Put,80.00,2027-06-17,3.37,1
+XOM,Put,100.00,2027-06-17,4.50,1
+PLTR,Put,200.00,2027-06-17,58.92,1

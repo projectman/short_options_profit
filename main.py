@@ -195,8 +195,9 @@ def process_single_underlying(
 def main():
     parser = argparse.ArgumentParser(description="Analyze diagonal spread short put candidates with individual per-symbol reports.")
     parser.add_argument("--config", default="rules.yaml", help="Path to YAML rules configuration file (default: rules.yaml)")
+    parser.add_argument("--positions", default="basis_long_positions.csv", help="Path to CSV basis long positions file (default: basis_long_positions.csv)")
     parser.add_argument("--source", default="source", help="Directory containing downloaded options files (default: source)")
-    parser.add_argument("--symbol", default=None, help="Target underlying symbol (e.g. UPS, XOM, or ALL). If omitted, an interactive prompt is shown.")
+    parser.add_argument("--symbol", default=None, help="Target underlying symbol (e.g. UPS, XOM, PLTR, or ALL). If omitted, an interactive prompt is shown.")
     parser.add_argument("--min-delta", type=float, default=None, help="Override minimum absolute delta (e.g. 0.15)")
     parser.add_argument("--max-delta", type=float, default=None, help="Override maximum absolute delta (e.g. 0.55)")
     parser.add_argument("--show-all-puts", action="store_true", help="Show full diagnostics of all scanned put options")
@@ -205,8 +206,8 @@ def main():
     console = Console()
     console.print("\n[bold cyan]═══ Short Options Profit & Diagonal Spread Selection ═══[/bold cyan]\n")
 
-    # Load configuration from YAML rules file
-    rules = StrategyRules.from_yaml(args.config)
+    # Load configuration from YAML rules file and CSV positions file
+    rules = StrategyRules.from_yaml(args.config, positions_file=args.positions)
     if args.min_delta is not None:
         rules.min_delta = args.min_delta
     if args.max_delta is not None:

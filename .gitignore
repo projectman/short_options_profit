@@ -3,6 +3,7 @@
 venv/
 env/
 ENV/
+.matplotlib_cache/
 
 # Python Cache & Bytecode
 __pycache__/

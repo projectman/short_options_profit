@@ -1,6 +1,6 @@
-# Strategy Rules & Constants for Short Options Selection (Diagonal Spreads & Cash Protected Puts)
+# Strategy Rules & Constants for Short Options Selection (Diagonal Spreads, Cash Protected Puts, Vertical Spreads)
 
-# Delta filtering range
+# Delta filtering range for short puts
 delta_filter:
   min_delta: 0.15
   max_delta: 0.55
@@ -27,6 +27,14 @@ profit_target:
   cash_protected_put:
     target_yield: 0.50           # 50% profit from extrinsic value for standalone short puts
     target_residual_ratio: 0.50  # Option price decays to 50% residual extrinsic
+  vertical_spread:
+    target_yield: 0.50           # 50% profit from net credit for vertical credit spreads
+    target_residual_ratio: 0.50  # Option price decays to 50%
 
-# Basis Long Positions File
+# Vertical Spread Long Put Selection Rules
+vertical_spread:
+  target_delta_offset: 0.15      # Target delta difference (|delta_short| - 0.15)
+  min_long_delta: 0.05           # Minimum delta bound for long put (delta cannot be less than 0.05)
+
+# Basis Long Positions File (Used for Diagonal Spreads)
 positions_file: "basis_long_positions.csv"

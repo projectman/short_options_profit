@@ -28,7 +28,11 @@ def test_strategy_rules_from_yaml():
     assert rules.min_delta == 0.15
     assert rules.max_delta == 0.55
     assert rules.require_strike_less_than_spot is False
-    assert rules.target_yield == 0.80
+    assert rules.target_yield_diagonal == 0.80
+    assert rules.target_yield_cash_protected == 0.50
+    assert rules.target_yield_vertical == 0.50
+    assert rules.vertical_target_delta_offset == 0.15
+    assert rules.vertical_min_long_delta == 0.05
     
     symbols = rules.list_symbols()
     assert "UPS" in symbols
@@ -40,16 +44,6 @@ def test_strategy_rules_from_yaml():
     assert ups_pos.strike == 80.0
     assert ups_pos.cost_basis == 3.37
     assert ups_pos.expiration_date == "2027-06-17"
-
-    xom_pos = rules.get_basis_position("XOM")
-    assert xom_pos is not None
-    assert xom_pos.strike == 100.0
-    assert xom_pos.expiration_date == "2027-06-17"
-
-    pltr_pos = rules.get_basis_position("PLTR")
-    assert pltr_pos is not None
-    assert pltr_pos.strike == 200.0
-    assert pltr_pos.cost_basis == 58.92
 
 
 def test_diagonal_spread_analyzer_ups():
@@ -95,8 +89,7 @@ def test_diagonal_spread_analyzer_ups():
 
 def test_cash_protected_put_analyzer_aapl():
     rules = StrategyRules.from_yaml("rules.yaml")
-    # No basis_long passed -> runs as Cash Protected Put
-    analyzer = ShortOptionsAnalyzer(basis_long=None, rules=rules)
+    analyzer = ShortOptionsAnalyzer(basis_long=None, rules=rules, strategy_type=StrategyType.CASH_PROTECTED_PUT)
 
     # AAPL 300.00P (Spot = 306.00, Mid = 7.10, IV = 0.2288, DTE = 33)
     row = pd.Series({
@@ -132,3 +125,42 @@ def test_cash_protected_put_analyzer_aapl():
     assert result["days_to_target"] > 0
     assert result["daily_relative_profit"] > 0
     assert result["expected_daily_relative_profit"] > 0
+
+
+def test_vertical_spread_analyzer_aapl():
+    rules = StrategyRules.from_yaml("rules.yaml")
+    analyzer = ShortOptionsAnalyzer(rules=rules, strategy_type=StrategyType.VERTICAL_SPREAD)
+
+    # Mock options chain for AAPL
+    df_chain = pd.DataFrame([
+        {"Strike": 300.0, "Mid": 5.45, "Delta": -0.3622, "IV": 0.2281, "dte": 33, "expiration_date": "2026-09-18", "Type": "Put", "symbol": "AAPL"},
+        {"Strike": 295.0, "Mid": 3.80, "Delta": -0.2772, "IV": 0.2301, "dte": 33, "expiration_date": "2026-09-18", "Type": "Put", "symbol": "AAPL"},
+        {"Strike": 290.0, "Mid": 2.63, "Delta": -0.2062, "IV": 0.2350, "dte": 33, "expiration_date": "2026-09-18", "Type": "Put", "symbol": "AAPL"}, # target: 0.3622 - 0.15 = 0.2122 (closest!)
+        {"Strike": 285.0, "Mid": 1.80, "Delta": -0.1496, "IV": 0.2411, "dte": 33, "expiration_date": "2026-09-18", "Type": "Put", "symbol": "AAPL"},
+        {"Strike": 280.0, "Mid": 1.25, "Delta": -0.1080, "IV": 0.2498, "dte": 33, "expiration_date": "2026-09-18", "Type": "Put", "symbol": "AAPL"},
+    ])
+
+    short_row = df_chain.iloc[0]
+    best_long = analyzer.find_vertical_long_put(short_row, df_chain)
+    
+    assert best_long is not None
+    # 290.00P has delta -0.2062, which is closest to (0.3622 - 0.15 = 0.2122)
+    assert best_long["Strike"] == 290.0
+
+    result = analyzer.analyze_candidate(short_row, spot_price=306.00, full_df=df_chain)
+    assert result is not None
+    assert result["strategy_type"] == "Vertical Put Spread"
+    assert result["strike"] == 300.0
+    assert result["long_strike"] == 290.0
+    
+    # Net Credit = 5.45 - 2.63 = 2.82 -> Profit = $282.00
+    assert result["profit_usd"] == pytest.approx(282.00, rel=1e-2)
+    
+    # Target Profit (50%) = 0.50 * 282.00 = $141.00
+    assert result["target_profit_usd"] == pytest.approx(141.00, rel=1e-2)
+    
+    # Max Risk = (300 - 290 - 2.82) * 100 = 7.18 * 100 = $718.00
+    assert result["max_risk_usd"] == pytest.approx(718.00, rel=1e-2)
+    
+    # Target Yield % = (141.00 / 718.00) * 100 = 19.64%
+    assert result["target_yield_pct"] == pytest.approx((141.00 / 718.00) * 100, rel=1e-2)

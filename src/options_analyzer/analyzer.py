@@ -1,9 +1,10 @@
-"""Unified Options Strategy Analyzer for Diagonal Put Spreads and Cash Protected Puts (Cash Secured Puts).
+"""Unified Options Strategy Analyzer for Diagonal Put Spreads, Cash Protected Puts, and Vertical Put Spreads.
 
 Single codebase providing high code reuse for pricing, decay, profit yield, and risk calculations.
 Strategy-specific profit targets:
-  - Diagonal Put Spreads: 80% target yield (decay to 20% residual extrinsic)
-  - Cash Protected Short Puts: 50% target yield (decay to 50% residual extrinsic)
+  - Diagonal Put Spreads: 80% target yield of extrinsic value (decay to 20% residual extrinsic)
+  - Cash Protected Short Puts: 50% target yield of extrinsic value (decay to 50% residual extrinsic)
+  - Vertical Put Spreads: 50% target yield of net credit (decay to 50% residual credit)
 Rules and constants are loaded from rules.yaml.
 Basis long positions for diagonal spreads are loaded from basis_long_positions.csv.
 """
@@ -26,6 +27,7 @@ class StrategyType(str, Enum):
     """Supported short options strategy types."""
     DIAGONAL_SPREAD = "diagonal_spread"
     CASH_PROTECTED_PUT = "cash_protected_put"
+    VERTICAL_SPREAD = "vertical_spread"
 
 
 @dataclass
@@ -83,6 +85,10 @@ class StrategyRules:
     target_residual_ratio_diagonal: float = 0.20
     target_yield_cash_protected: float = 0.50
     target_residual_ratio_cash_protected: float = 0.50
+    target_yield_vertical: float = 0.50
+    target_residual_ratio_vertical: float = 0.50
+    vertical_target_delta_offset: float = 0.15
+    vertical_min_long_delta: float = 0.05
     basis_long_positions: List[LongOptionPosition] = field(default_factory=list)
 
     @property
@@ -96,15 +102,19 @@ class StrategyRules:
         return self.target_residual_ratio_diagonal
 
     def get_target_yield(self, strategy_type: Union[str, StrategyType]) -> float:
-        """Get target profit yield for the given strategy type (0.80 for diagonal, 0.50 for cash protected put)."""
+        """Get target profit yield for the given strategy type."""
         st = str(strategy_type).lower()
+        if "vertical" in st:
+            return self.target_yield_vertical
         if "cash" in st:
             return self.target_yield_cash_protected
         return self.target_yield_diagonal
 
     def get_target_residual_ratio(self, strategy_type: Union[str, StrategyType]) -> float:
-        """Get target residual ratio for the given strategy type (0.20 for diagonal, 0.50 for cash protected put)."""
+        """Get target residual ratio for the given strategy type."""
         st = str(strategy_type).lower()
+        if "vertical" in st:
+            return self.target_residual_ratio_vertical
         if "cash" in st:
             return self.target_residual_ratio_cash_protected
         return self.target_residual_ratio_diagonal
@@ -148,8 +158,9 @@ class StrategyRules:
         opt_cfg = data["option_selection"]
         val_cfg = data["valuation"]
         profit_cfg = data.get("profit_target", {})
+        vert_cfg = data.get("vertical_spread", {})
 
-        # Support both nested strategy targets and flat targets
+        # Parse target yields by strategy
         if "diagonal_spread" in profit_cfg and isinstance(profit_cfg["diagonal_spread"], dict):
             ty_diag = float(profit_cfg["diagonal_spread"].get("target_yield", 0.80))
             tr_diag = float(profit_cfg["diagonal_spread"].get("target_residual_ratio", 0.20))
@@ -164,6 +175,16 @@ class StrategyRules:
             ty_cash = 0.50
             tr_cash = 0.50
 
+        if "vertical_spread" in profit_cfg and isinstance(profit_cfg["vertical_spread"], dict):
+            ty_vert = float(profit_cfg["vertical_spread"].get("target_yield", 0.50))
+            tr_vert = float(profit_cfg["vertical_spread"].get("target_residual_ratio", 0.50))
+        else:
+            ty_vert = 0.50
+            tr_vert = 0.50
+
+        vert_offset = float(vert_cfg.get("target_delta_offset", 0.15))
+        vert_min_long = float(vert_cfg.get("min_long_delta", 0.05))
+
         # Determine positions file path
         pos_csv = positions_file or data.get("positions_file", "basis_long_positions.csv")
         pos_csv_path = Path(pos_csv)
@@ -176,7 +197,6 @@ class StrategyRules:
         if pos_csv_path.exists():
             basis_positions = load_basis_long_positions_from_csv(pos_csv_path)
         else:
-            # Fallback to embedded yaml definitions if any
             positions_raw = data.get("basis_long_positions") or data.get("basis_long")
             if isinstance(positions_raw, dict):
                 positions_raw = [positions_raw]
@@ -204,13 +224,17 @@ class StrategyRules:
             target_residual_ratio_diagonal=tr_diag,
             target_yield_cash_protected=ty_cash,
             target_residual_ratio_cash_protected=tr_cash,
+            target_yield_vertical=ty_vert,
+            target_residual_ratio_vertical=tr_vert,
+            vertical_target_delta_offset=vert_offset,
+            vertical_min_long_delta=vert_min_long,
             risk_free_rate=float(val_cfg["risk_free_rate"]),
             basis_long_positions=basis_positions,
         )
 
 
 class ShortOptionsAnalyzer:
-    """Unified options profitability engine for both Diagonal Put Spreads and Cash Protected Puts."""
+    """Unified options profitability engine for Diagonal Put Spreads, Cash Protected Puts, and Vertical Put Spreads."""
 
     def __init__(
         self,
@@ -341,7 +365,58 @@ class ShortOptionsAnalyzer:
 
         return selected_df, diag_df
 
-    def analyze_candidate(self, row: pd.Series, spot_price: float) -> Dict[str, Any]:
+    def find_vertical_long_put(
+        self,
+        short_row: pd.Series,
+        full_df: pd.DataFrame,
+    ) -> Optional[pd.Series]:
+        """Find the corresponding protecting Long PUT from the SAME expiration for a Vertical Put Spread.
+        
+        Selection criteria:
+          - Same expiration date
+          - Long Strike < Short Strike
+          - Absolute Delta >= vertical_min_long_delta (e.g. 0.05)
+          - Absolute Delta closest to [short put delta - vertical_target_delta_offset (0.15)]
+        """
+        exp_date = str(short_row.get("expiration_date", ""))
+        short_strike = float(short_row["Strike"])
+        short_delta = abs(float(short_row["Delta"]))
+
+        target_long_delta = max(self.rules.vertical_min_long_delta, short_delta - self.rules.vertical_target_delta_offset)
+
+        # Filter candidate puts in the same expiration
+        same_exp = full_df.copy()
+        if "expiration_date" in same_exp.columns:
+            same_exp = same_exp[same_exp["expiration_date"].astype(str) == exp_date]
+        if "Type" in same_exp.columns:
+            same_exp = same_exp[same_exp["Type"].str.lower() == "put"]
+
+        if same_exp.empty or "Strike" not in same_exp.columns or "Delta" not in same_exp.columns:
+            return None
+
+        # Strikes lower than short put strike
+        lower_puts = same_exp[same_exp["Strike"] < short_strike].copy()
+        if lower_puts.empty:
+            return None
+
+        lower_puts["abs_delta"] = lower_puts["Delta"].abs()
+        # Filter for min long delta (cannot be less than min_long_delta, e.g. 0.05)
+        valid_longs = lower_puts[lower_puts["abs_delta"] >= self.rules.vertical_min_long_delta].copy()
+        if valid_longs.empty:
+            return None
+
+        # Find the long put whose delta is closest to target_long_delta
+        valid_longs["delta_diff"] = (valid_longs["abs_delta"] - target_long_delta).abs()
+        best_long = valid_longs.sort_values(by=["delta_diff", "Strike"], ascending=[True, False]).iloc[0]
+
+        return best_long
+
+    def analyze_candidate(
+        self,
+        row: pd.Series,
+        spot_price: float,
+        full_df: Optional[pd.DataFrame] = None,
+    ) -> Optional[Dict[str, Any]]:
         """Perform comprehensive pricing decay, risk, Full Profit, Target Profit, and Target Yield calculations."""
         strike = float(row["Strike"])
         mid_price = float(row["Mid"])
@@ -354,16 +429,9 @@ class ShortOptionsAnalyzer:
         default_sym = self.basis_long.symbol if self.basis_long else "UNKNOWN"
         symbol = str(row.get("symbol", default_sym)).upper()
 
-        # Intrinsic & Extrinsic values
+        # Intrinsic & Extrinsic values of short put
         intrinsic_value = max(0.0, strike - spot_price)
         extrinsic_value = max(0.0, mid_price - intrinsic_value)
-
-        # Full Profit (100% of extrinsic premium collected, in USD)
-        full_profit_usd = extrinsic_value * 100.0
-
-        # Target Profit (configured yield: 80% for diagonal, 50% for cash protected put)
-        target_profit_per_share = self.target_yield * extrinsic_value
-        target_profit_usd = target_profit_per_share * 100.0  # 1 contract = 100 shares
 
         # Target option price (when option retains only configured residual extrinsic value + intrinsic value)
         target_price = intrinsic_value + self.target_residual_ratio * extrinsic_value
@@ -381,24 +449,59 @@ class ShortOptionsAnalyzer:
         # Avoid zero division
         effective_days = max(1.0, days_to_target)
 
-        # Nominal Daily profit in USD
-        daily_profit_usd = target_profit_usd / effective_days
+        # Default values for spread metrics
+        long_strike = 0.0
+        long_mid = 0.0
+        long_delta = 0.0
 
-        # Risk calculation based on strategy type:
-        if self.strategy_type == StrategyType.DIAGONAL_SPREAD and self.basis_long is not None:
+        # Strategy-specific Risk and Profit calculations:
+        if self.strategy_type == StrategyType.VERTICAL_SPREAD and full_df is not None:
+            # Vertical Put Spread: Short Put paired with Long Put from SAME expiration
+            long_put_row = self.find_vertical_long_put(row, full_df)
+            if long_put_row is None:
+                # If no valid long put satisfies criteria, skip candidate
+                return None
+
+            long_strike = float(long_put_row["Strike"])
+            long_mid = float(long_put_row["Mid"])
+            long_delta = float(long_put_row["Delta"])
+
+            net_credit_per_share = max(0.01, mid_price - long_mid)
+            strike_diff = max(0.0, strike - long_strike)
+            max_risk_per_share = max(0.01, strike_diff - net_credit_per_share)
+
+            max_risk_usd = max_risk_per_share * 100.0
+            full_profit_usd = net_credit_per_share * 100.0
+            target_profit_usd = self.target_yield * full_profit_usd
+            daily_profit_usd = target_profit_usd / effective_days
+            strategy_name = "Vertical Put Spread"
+            short_put_index = f"{symbol} {exp_date} {strike:.2f}P/{long_strike:.2f}P"
+
+        elif self.strategy_type == StrategyType.DIAGONAL_SPREAD and self.basis_long is not None:
             # Diagonal Put Spread Risk:
             # Max risk per share = (Short Strike - Long Strike) + (Long Cost Basis - Short Mid Premium)
             strike_diff = max(0.0, strike - self.basis_long.strike)
             net_debit = self.basis_long.cost_basis - mid_price
             spread_risk_per_share = strike_diff + net_debit
             max_risk_usd = max(1.0, spread_risk_per_share * 100.0)
+
+            full_profit_usd = extrinsic_value * 100.0
+            target_profit_usd = self.target_yield * extrinsic_value * 100.0
+            daily_profit_usd = target_profit_usd / effective_days
             strategy_name = "Diagonal Put Spread"
+            short_put_index = f"{symbol} {exp_date} {strike:.2f}P"
+
         else:
             # Cash Protected Put Risk:
             # Max risk per share = Strike - Mid Price (Strike minus cost of PUT)
             max_risk_per_share = max(0.01, strike - mid_price)
             max_risk_usd = max_risk_per_share * 100.0
+
+            full_profit_usd = extrinsic_value * 100.0
+            target_profit_usd = self.target_yield * extrinsic_value * 100.0
+            daily_profit_usd = target_profit_usd / effective_days
             strategy_name = "Cash Protected Put"
+            short_put_index = f"{symbol} {exp_date} {strike:.2f}P"
 
         # Target Yield % = (Target Profit / Max Risk) * 100
         target_yield_pct = (target_profit_usd / max_risk_usd) * 100.0
@@ -415,9 +518,6 @@ class ShortOptionsAnalyzer:
         # Delta Efficiency = Nominal Daily Relative Profit % / |Delta|
         delta_efficiency = (nominal_daily_rel_profit_pct / abs_delta) if abs_delta > 0 else 0.0
 
-        # Short put index/identifier format: SYMBOL YYMMDD P STRIKE
-        short_put_index = f"{symbol} {exp_date} {strike:.2f}P"
-
         return {
             "symbol": symbol,
             "strategy_type": strategy_name,
@@ -427,15 +527,18 @@ class ShortOptionsAnalyzer:
             "expected_daily_relative_profit": round(expected_daily_rel_profit_pct, 3),
             "daily_relative_profit": round(nominal_daily_rel_profit_pct, 3),
             "days_to_target": round(days_to_target, 2),
-            "profit_usd": round(full_profit_usd, 2),            # Full 100% Extrinsic Profit in USD
+            "profit_usd": round(full_profit_usd, 2),            # Full 100% Extrinsic or Net Credit in USD
             "max_risk_usd": round(max_risk_usd, 2),            # Max Risk in USD
-            "target_profit_usd": round(target_profit_usd, 2),  # Target Profit (50% or 80% Extrinsic) in USD
+            "target_profit_usd": round(target_profit_usd, 2),  # Target Profit in USD
             "target_yield_pct": round(target_yield_pct, 2),    # Target Yield % = Target Profit / Max Risk
             "p_win_pct": round(p_win * 100, 2),
             "strike": strike,
             "expiration_date": exp_date,
             "dte": int(dte_days),
             "mid_price": round(mid_price, 4),
+            "long_strike": long_strike,
+            "long_mid": long_mid,
+            "long_delta": long_delta,
             "iv_pct": round(iv * 100, 2),
             "daily_profit_usd": round(daily_profit_usd, 2),
             "delta_efficiency": round(delta_efficiency, 3),
@@ -468,11 +571,13 @@ class ShortOptionsAnalyzer:
 
         results = []
         for _, row in candidates.iterrows():
-            metrics = self.analyze_candidate(row, spot_price=spot_price)
-            results.append(metrics)
+            metrics = self.analyze_candidate(row, spot_price=spot_price, full_df=df)
+            if metrics is not None:
+                results.append(metrics)
 
-        result_df = pd.DataFrame(results)
-        result_df = result_df.sort_values(by="abs_delta", ascending=True).reset_index(drop=True)
+        result_df = pd.DataFrame(results) if results else pd.DataFrame()
+        if not result_df.empty:
+            result_df = result_df.sort_values(by="abs_delta", ascending=True).reset_index(drop=True)
 
         return result_df, diag_df
 

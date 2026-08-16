@@ -33,7 +33,7 @@ profit_target:
 
 # Vertical Spread Long Put Selection Rules
 vertical_spread:
-  target_delta_offset: 0.15      # Target delta difference (|delta_short| - 0.15)
+  target_delta_offset: 0.20      # Target delta difference (|delta_short| - 0.20)
   min_long_delta: 0.05           # Minimum delta bound for long put (delta cannot be less than 0.05)
 
 # Basis Long Positions File (Used for Diagonal Spreads)

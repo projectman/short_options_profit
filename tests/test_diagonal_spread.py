@@ -31,7 +31,7 @@ def test_strategy_rules_from_yaml():
     assert rules.target_yield_diagonal == 0.80
     assert rules.target_yield_cash_protected == 0.50
     assert rules.target_yield_vertical == 0.50
-    assert rules.vertical_target_delta_offset == 0.15
+    assert rules.vertical_target_delta_offset == 0.20
     assert rules.vertical_min_long_delta == 0.05
     
     symbols = rules.list_symbols()
@@ -135,8 +135,8 @@ def test_vertical_spread_analyzer_aapl():
     df_chain = pd.DataFrame([
         {"Strike": 300.0, "Mid": 5.45, "Delta": -0.3622, "IV": 0.2281, "dte": 33, "expiration_date": "2026-09-18", "Type": "Put", "symbol": "AAPL"},
         {"Strike": 295.0, "Mid": 3.80, "Delta": -0.2772, "IV": 0.2301, "dte": 33, "expiration_date": "2026-09-18", "Type": "Put", "symbol": "AAPL"},
-        {"Strike": 290.0, "Mid": 2.63, "Delta": -0.2062, "IV": 0.2350, "dte": 33, "expiration_date": "2026-09-18", "Type": "Put", "symbol": "AAPL"}, # target: 0.3622 - 0.15 = 0.2122 (closest!)
-        {"Strike": 285.0, "Mid": 1.80, "Delta": -0.1496, "IV": 0.2411, "dte": 33, "expiration_date": "2026-09-18", "Type": "Put", "symbol": "AAPL"},
+        {"Strike": 290.0, "Mid": 2.63, "Delta": -0.2062, "IV": 0.2350, "dte": 33, "expiration_date": "2026-09-18", "Type": "Put", "symbol": "AAPL"},
+        {"Strike": 285.0, "Mid": 1.80, "Delta": -0.1496, "IV": 0.2411, "dte": 33, "expiration_date": "2026-09-18", "Type": "Put", "symbol": "AAPL"}, # target: 0.3622 - 0.20 = 0.1622 (closest: 0.1496!)
         {"Strike": 280.0, "Mid": 1.25, "Delta": -0.1080, "IV": 0.2498, "dte": 33, "expiration_date": "2026-09-18", "Type": "Put", "symbol": "AAPL"},
     ])
 
@@ -144,23 +144,23 @@ def test_vertical_spread_analyzer_aapl():
     best_long = analyzer.find_vertical_long_put(short_row, df_chain)
     
     assert best_long is not None
-    # 290.00P has delta -0.2062, which is closest to (0.3622 - 0.15 = 0.2122)
-    assert best_long["Strike"] == 290.0
+    # 285.00P has delta -0.1496, which is closest to (0.3622 - 0.20 = 0.1622)
+    assert best_long["Strike"] == 285.0
 
     result = analyzer.analyze_candidate(short_row, spot_price=306.00, full_df=df_chain)
     assert result is not None
     assert result["strategy_type"] == "Vertical Put Spread"
     assert result["strike"] == 300.0
-    assert result["long_strike"] == 290.0
+    assert result["long_strike"] == 285.0
     
-    # Net Credit = 5.45 - 2.63 = 2.82 -> Profit = $282.00
-    assert result["profit_usd"] == pytest.approx(282.00, rel=1e-2)
+    # Net Credit = 5.45 - 1.80 = 3.65 -> Profit = $365.00
+    assert result["profit_usd"] == pytest.approx(365.00, rel=1e-2)
     
-    # Target Profit (50%) = 0.50 * 282.00 = $141.00
-    assert result["target_profit_usd"] == pytest.approx(141.00, rel=1e-2)
+    # Target Profit (50%) = 0.50 * 365.00 = $182.50
+    assert result["target_profit_usd"] == pytest.approx(182.50, rel=1e-2)
     
-    # Max Risk = (300 - 290 - 2.82) * 100 = 7.18 * 100 = $718.00
-    assert result["max_risk_usd"] == pytest.approx(718.00, rel=1e-2)
+    # Max Risk = (300 - 285 - 3.65) * 100 = 11.35 * 100 = $1135.00
+    assert result["max_risk_usd"] == pytest.approx(1135.00, rel=1e-2)
     
-    # Target Yield % = (141.00 / 718.00) * 100 = 19.64%
-    assert result["target_yield_pct"] == pytest.approx((141.00 / 718.00) * 100, rel=1e-2)
+    # Target Yield % = (182.50 / 1135.00) * 100 = 16.08%
+    assert result["target_yield_pct"] == pytest.approx((182.50 / 1135.00) * 100, rel=1e-2)

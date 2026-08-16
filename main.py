@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from options_analyzer.loader import DataLoader
 from options_analyzer.analyzer import ShortOptionsAnalyzer, LongOptionPosition, StrategyRules, StrategyType
+from options_analyzer.plotter import plot_vertical_spread_3d
 
 
 def process_single_underlying(
@@ -243,6 +244,13 @@ def process_single_underlying(
 
     console.print(table)
     console.print(f"  • Wrote report: [cyan]{sym_csv}[/cyan] and [cyan]{sym_md}[/cyan]")
+
+    if strat_type == StrategyType.VERTICAL_SPREAD:
+        try:
+            png_path = plot_vertical_spread_3d(csv_or_df=export_df, symbol=sym)
+            console.print(f"  • Wrote 3D Plot: [bold green]{png_path}[/bold green]")
+        except Exception as e:
+            console.print(f"[yellow]Could not generate 3D plot for {sym}: {e}[/yellow]")
 
     return export_df
 

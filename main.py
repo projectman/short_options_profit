@@ -1,4 +1,4 @@
-"""Main entry point for Short Options Profit & Diagonal Spread Selection Analyzer with Individual Per-Symbol Reports."""
+"""Main entry point for Short Options Profit Analyzer supporting both Diagonal Put Spreads and Cash Protected Puts."""
 
 import argparse
 import sys
@@ -13,41 +13,66 @@ from rich.table import Table
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from options_analyzer.loader import DataLoader
-from options_analyzer.analyzer import DiagonalSpreadAnalyzer, LongOptionPosition, StrategyRules
+from options_analyzer.analyzer import ShortOptionsAnalyzer, LongOptionPosition, StrategyRules, StrategyType
 
 
 def process_single_underlying(
     console: Console,
     rules: StrategyRules,
-    basis_pos: LongOptionPosition,
+    symbol: str,
     df_raw: pd.DataFrame,
     output_dir: Path,
+    basis_pos: Optional[LongOptionPosition] = None,
+    strategy_override: Optional[str] = None,
     show_all_puts: bool = False,
 ) -> Optional[pd.DataFrame]:
-    """Process analysis for a single underlying asset and write reports."""
-    symbol = basis_pos.symbol.upper()
-    console.print(f"\n[bold blue]─── Analyzing Underlying: [bold yellow]{symbol}[/bold yellow] ───[/bold blue]")
+    """Process analysis for a single underlying asset (as Diagonal Spread or Cash Protected Put)."""
+    sym = symbol.upper()
+    
+    # Determine strategy
+    if strategy_override and strategy_override.lower() == "cash_secured_put":
+        strat_type = StrategyType.CASH_PROTECTED_PUT
+        basis_pos = None
+    elif strategy_override and strategy_override.lower() == "diagonal_spread" and basis_pos is not None:
+        strat_type = StrategyType.DIAGONAL_SPREAD
+    else:
+        strat_type = StrategyType.DIAGONAL_SPREAD if basis_pos is not None else StrategyType.CASH_PROTECTED_PUT
+
+    is_diagonal = strat_type == StrategyType.DIAGONAL_SPREAD
+    strategy_title = "Diagonal Put Spread" if is_diagonal else "Cash Protected Put (Cash Secured Put)"
+
+    console.print(f"\n[bold blue]─── Analyzing Underlying: [bold yellow]{sym}[/bold yellow] ({strategy_title}) ───[/bold blue]")
 
     # Filter raw dataframe for this symbol if present
     if "symbol" in df_raw.columns:
-        df_symbol = df_raw[df_raw["symbol"].str.upper() == symbol].copy()
+        df_symbol = df_raw[df_raw["symbol"].str.upper() == sym].copy()
     else:
         df_symbol = df_raw.copy()
 
     if df_symbol.empty:
-        console.print(f"[yellow]No data files or rows found for symbol [bold]{symbol}[/bold] in source/ folder.[/yellow]")
+        console.print(f"[yellow]No data files or rows found for symbol [bold]{sym}[/bold] in source/ folder.[/yellow]")
         return None
 
     # Estimate Spot Price for this symbol
     spot_price = DataLoader.estimate_spot_price(df_symbol)
-    console.print(f"  • Estimated Spot Price ({symbol}): [bold green]${spot_price:.2f}[/bold green]")
-    console.print(
-        f"  • Basis Long Put: [bold yellow]{basis_pos.symbol} ${basis_pos.strike:.2f}P[/bold yellow] "
-        f"Exp: [bold white]{basis_pos.expiration_date}[/bold white] | Cost Basis: [bold green]${basis_pos.cost_basis:.2f}[/bold green] / share (${basis_pos.cost_basis * 100:.2f}/contract)"
-    )
+    console.print(f"  • Estimated Spot Price ({sym}): [bold green]${spot_price:.2f}[/bold green]")
+    
+    if is_diagonal and basis_pos:
+        console.print(
+            f"  • Strategy: [bold cyan]Diagonal Put Spread[/bold cyan] | Basis Long: [bold yellow]{basis_pos.symbol} ${basis_pos.strike:.2f}P[/bold yellow] "
+            f"Exp: [bold white]{basis_pos.expiration_date}[/bold white] | Cost Basis: [bold green]${basis_pos.cost_basis:.2f}[/bold green] / share (${basis_pos.cost_basis * 100:.2f}/contract)"
+        )
+    else:
+        console.print(
+            f"  • Strategy: [bold cyan]Cash Protected Put[/bold cyan] (No protecting long position; Max Risk = Strike - Mid)"
+        )
 
-    analyzer = DiagonalSpreadAnalyzer(basis_long=basis_pos, rules=rules)
-    results_df, diag_df = analyzer.analyze_dataset(df_symbol, spot_price=spot_price, symbol=symbol)
+    analyzer = ShortOptionsAnalyzer(
+        basis_long=basis_pos,
+        rules=rules,
+        strategy_type=strat_type,
+    )
+    results_df, diag_df = analyzer.analyze_dataset(df_symbol, spot_price=spot_price, symbol=sym)
 
     num_selected = len(results_df)
     num_excluded = len(diag_df) - num_selected
@@ -55,7 +80,7 @@ def process_single_underlying(
 
     # Diagnostics breakdown table
     diag_table = Table(
-        title=f"Put Options Scan Breakdown for {symbol} (Strikes near Delta Bounds [{rules.min_delta:.2f}, {rules.max_delta:.2f}])",
+        title=f"Put Options Scan Breakdown for {sym} (Strikes near Delta Bounds [{rules.min_delta:.2f}, {rules.max_delta:.2f}])",
         title_style="bold yellow",
         header_style="bold cyan",
         show_lines=True,
@@ -69,33 +94,39 @@ def process_single_underlying(
     diag_table.add_column("Status", justify="center")
     diag_table.add_column("Filter Decision / Reason", justify="left")
 
-    relevant_diag = diag_df[(diag_df["strike"] >= 75.0) & (diag_df["strike"] <= 165.0)].copy()
-    if show_all_puts or relevant_diag.empty:
+    if not diag_df.empty:
+        min_p_strike = diag_df["strike"].min()
+        max_p_strike = diag_df["strike"].max()
         relevant_diag = diag_df.copy()
+        if not show_all_puts and (max_p_strike - min_p_strike > 50):
+            # Focus on strikes within +/- 20% of spot price
+            relevant_diag = diag_df[(diag_df["strike"] >= spot_price * 0.75) & (diag_df["strike"] <= spot_price * 1.25)].copy()
+            if relevant_diag.empty:
+                relevant_diag = diag_df.copy()
 
-    for _, row in relevant_diag.iterrows():
-        status_str = "[bold green]SELECTED[/bold green]" if row["status"] == "SELECTED" else "[red]EXCLUDED[/red]"
-        reason_color = "white" if row["status"] == "SELECTED" else "dim red"
-        diag_table.add_row(
-            str(row["symbol"]),
-            str(row["expiration_date"]),
-            f"${row['strike']:.2f}",
-            f"{row['delta']:+.4f}",
-            f"{row['abs_delta']:.4f}",
-            f"${row['mid']:.2f}",
-            status_str,
-            f"[{reason_color}]{row['reason']}[/{reason_color}]",
-        )
-
-    console.print(diag_table)
+        for _, row in relevant_diag.iterrows():
+            status_str = "[bold green]SELECTED[/bold green]" if row["status"] == "SELECTED" else "[red]EXCLUDED[/red]"
+            reason_color = "white" if row["status"] == "SELECTED" else "dim red"
+            diag_table.add_row(
+                str(row["symbol"]),
+                str(row["expiration_date"]),
+                f"${row['strike']:.2f}",
+                f"{row['delta']:+.4f}",
+                f"{row['abs_delta']:.4f}",
+                f"${row['mid']:.2f}",
+                status_str,
+                f"[{reason_color}]{row['reason']}[/{reason_color}]",
+            )
+        console.print(diag_table)
 
     if results_df.empty:
-        console.print(f"[yellow]No short put candidates matched filter criteria for {symbol}.[/yellow]")
+        console.print(f"[yellow]No short put candidates matched filter criteria for {sym}.[/yellow]")
         return None
 
     # Column ordering: Profit ($), Max Risk ($), Target Profit ($), Target Yield (%)
     display_cols = [
         "symbol",
+        "strategy_type",
         "delta",
         "short_put_index",
         "expected_daily_relative_profit",
@@ -116,16 +147,24 @@ def process_single_underlying(
     ]
     export_df = results_df[display_cols].copy()
 
-    # Save per-symbol outputs ONLY
-    sym_csv = output_dir / f"diagonal_spread_analysis_{symbol}.csv"
-    sym_md = output_dir / f"diagonal_spread_analysis_{symbol}.md"
+    # Save per-symbol outputs
+    prefix = "diagonal_spread_analysis" if is_diagonal else "cash_protected_put_analysis"
+    sym_csv = output_dir / f"{prefix}_{sym}.csv"
+    sym_md = output_dir / f"{prefix}_{sym}.md"
     export_df.to_csv(sym_csv, index=False)
 
-    md_content = f"""# Short Put Options Selection & Diagonal Spread Analysis ({symbol})
+    long_info = (
+        f"**Basis Long Put**: {basis_pos.symbol} ${basis_pos.strike:.2f}P Exp: {basis_pos.expiration_date} (Cost: ${basis_pos.cost_basis:.2f} / share)  \n"
+        f"**Max Risk Formula**: $(K_{{\\text{{short}}}} - K_{{\\text{{long}}}}) + (\\text{{Cost}}_{{\\text{{long}}}} - \\text{{Mid}}_{{\\text{{short}}}})$  "
+        if is_diagonal and basis_pos
+        else "**Position Type**: Cash Protected Put (No protecting long position)  \n**Max Risk Formula**: $K_{{\\text{{short}}}} - \\text{{Mid}}_{{\\text{{short}}}}$ (Strike minus cost of PUT)  "
+    )
 
-**Underlying**: {symbol} ($ {spot_price:.2f})  
-**Basis Long Put**: {basis_pos.symbol} ${basis_pos.strike:.2f}P Exp: {basis_pos.expiration_date} (Cost: ${basis_pos.cost_basis:.2f} / share)  
-**Strategy**: Diagonal Put Spread with {rules.target_yield * 100:.0f}% Extrinsic Profit Target  
+    md_content = f"""# Short Put Options Selection & {strategy_title} ({sym})
+
+**Underlying**: {sym} ($ {spot_price:.2f})  
+**Strategy**: {strategy_title} with {rules.target_yield * 100:.0f}% Extrinsic Profit Target  
+{long_info}
 **Delta Filter**: [{rules.min_delta:.2f}, {rules.max_delta:.2f}]  
 **Valuation Rule**: Always use Medium price for Bid/Ask: $\\text{{Mid}} = \\frac{{\\text{{Bid}} + \\text{{Ask}}}}{{2}}$  
 
@@ -148,7 +187,7 @@ def process_single_underlying(
 
     # Rich Summary Table
     table = Table(
-        title=f"Final Selected Short Puts for {symbol} Diagonal Spread (Sorted by Delta)",
+        title=f"Final Selected Short Puts for {sym} {strategy_title} (Sorted by Delta)",
         title_style="bold magenta",
         header_style="bold cyan",
         show_lines=True,
@@ -193,18 +232,19 @@ def process_single_underlying(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Analyze diagonal spread short put candidates with individual per-symbol reports.")
+    parser = argparse.ArgumentParser(description="Analyze Diagonal Put Spreads and Cash Protected Puts with probability-adjusted yields.")
     parser.add_argument("--config", default="rules.yaml", help="Path to YAML rules configuration file (default: rules.yaml)")
     parser.add_argument("--positions", default="basis_long_positions.csv", help="Path to CSV basis long positions file (default: basis_long_positions.csv)")
     parser.add_argument("--source", default="source", help="Directory containing downloaded options files (default: source)")
-    parser.add_argument("--symbol", default=None, help="Target underlying symbol (e.g. UPS, XOM, PLTR, or ALL). If omitted, an interactive prompt is shown.")
+    parser.add_argument("--symbol", default=None, help="Target underlying symbol (e.g. AAPL, PLTR, UPS, XOM, or ALL). If omitted, an interactive prompt is shown.")
+    parser.add_argument("--strategy", default=None, choices=["auto", "diagonal_spread", "cash_secured_put"], help="Override strategy type (default: auto)")
     parser.add_argument("--min-delta", type=float, default=None, help="Override minimum absolute delta (e.g. 0.15)")
     parser.add_argument("--max-delta", type=float, default=None, help="Override maximum absolute delta (e.g. 0.55)")
     parser.add_argument("--show-all-puts", action="store_true", help="Show full diagnostics of all scanned put options")
     args = parser.parse_args()
 
     console = Console()
-    console.print("\n[bold cyan]═══ Short Options Profit & Diagonal Spread Selection ═══[/bold cyan]\n")
+    console.print("\n[bold cyan]═══ Short Options Profit & Strategy Analyzer ═══[/bold cyan]\n")
 
     # Load configuration from YAML rules file and CSV positions file
     rules = StrategyRules.from_yaml(args.config, positions_file=args.positions)
@@ -212,12 +252,6 @@ def main():
         rules.min_delta = args.min_delta
     if args.max_delta is not None:
         rules.max_delta = args.max_delta
-
-    available_symbols = rules.list_symbols()
-    console.print(f"[bold blue]Configuration loaded from:[/bold blue] [cyan]{args.config}[/cyan]")
-    console.print(f"  • Configured Underlyings: [bold yellow]{', '.join(available_symbols)}[/bold yellow]")
-    console.print(f"  • Delta Range: [bold green]{rules.min_delta:.2f} - {rules.max_delta:.2f}[/bold green]")
-    console.print(f"  • Profit Target: [bold green]{rules.target_yield * 100:.0f}%[/bold green] of extrinsic value\n")
 
     loader = DataLoader(args.source)
     files = loader.list_files()
@@ -236,17 +270,30 @@ def main():
         console.print("[red]Could not load data from files in source/.[/red]")
         return
 
+    # Discover all symbols from loaded data and long positions
+    raw_symbols = sorted(list(df_raw["symbol"].dropna().unique())) if "symbol" in df_raw.columns else []
+    configured_symbols = rules.list_symbols()
+    all_symbols = sorted(list(set(raw_symbols + configured_symbols)))
+
+    console.print(f"\n[bold blue]Configuration loaded:[/bold blue]")
+    console.print(f"  • Discovered Underlyings: [bold yellow]{', '.join(all_symbols)}[/bold yellow]")
+    console.print(f"  • Delta Range: [bold green]{rules.min_delta:.2f} - {rules.max_delta:.2f}[/bold green]")
+    console.print(f"  • Profit Target: [bold green]{rules.target_yield * 100:.0f}%[/bold green] of extrinsic value\n")
+
     # Select underlying symbol
     target_symbol = args.symbol
     if not target_symbol:
-        choices = available_symbols + ["ALL"]
-        console.print("\n[bold cyan]Select Underlying to Analyze:[/bold cyan]")
+        choices = all_symbols + ["ALL"]
+        console.print("[bold cyan]Select Underlying to Analyze:[/bold cyan]")
         for i, sym in enumerate(choices, 1):
             if sym == "ALL":
-                console.print(f"  [{i}] [bold green]ALL[/bold green] (Process all configured underlyings individually)")
+                console.print(f"  [{i}] [bold green]ALL[/bold green] (Process all discovered underlyings individually)")
             else:
                 pos = rules.get_basis_position(sym)
-                console.print(f"  [{i}] [bold yellow]{sym}[/bold yellow] (Basis Long: {pos.strike:.2f}P {pos.expiration_date} @ ${pos.cost_basis:.2f})")
+                if pos:
+                    console.print(f"  [{i}] [bold yellow]{sym}[/bold yellow] [cyan][Diagonal Spread][/cyan] (Basis Long: {pos.strike:.2f}P {pos.expiration_date} @ ${pos.cost_basis:.2f})")
+                else:
+                    console.print(f"  [{i}] [bold yellow]{sym}[/bold yellow] [magenta][Cash Protected Put][/magenta] (Max Risk = Strike - Mid)")
 
         choice_input = Prompt.ask(
             "\nEnter choice number or symbol name",
@@ -265,20 +312,18 @@ def main():
     output_dir = Path("output")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    symbols_to_process = available_symbols if target_symbol == "ALL" else [target_symbol]
+    symbols_to_process = all_symbols if target_symbol == "ALL" else [target_symbol]
 
     for sym in symbols_to_process:
         pos = rules.get_basis_position(sym)
-        if not pos:
-            console.print(f"[red]Error: Symbol '{sym}' is not configured in {args.config}.[/red]")
-            continue
-
         process_single_underlying(
             console=console,
             rules=rules,
-            basis_pos=pos,
+            symbol=sym,
             df_raw=df_raw,
             output_dir=output_dir,
+            basis_pos=pos,
+            strategy_override=args.strategy,
             show_all_puts=args.show_all_puts,
         )
 

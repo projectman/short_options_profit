@@ -1,9 +1,11 @@
 import pytest
 import pandas as pd
 from options_analyzer.analyzer import (
+    ShortOptionsAnalyzer,
     DiagonalSpreadAnalyzer,
     LongOptionPosition,
     StrategyRules,
+    StrategyType,
     load_basis_long_positions_from_csv,
 )
 
@@ -53,7 +55,7 @@ def test_strategy_rules_from_yaml():
 def test_diagonal_spread_analyzer_ups():
     rules = StrategyRules.from_yaml("rules.yaml")
     ups_pos = rules.get_basis_position("UPS")
-    analyzer = DiagonalSpreadAnalyzer(basis_long=ups_pos, rules=rules)
+    analyzer = ShortOptionsAnalyzer(basis_long=ups_pos, rules=rules)
 
     # Test candidate row: Strike 100 (OTM, Spot 104.50), Mid = 1.59
     row = pd.Series({
@@ -71,6 +73,7 @@ def test_diagonal_spread_analyzer_ups():
     result = analyzer.analyze_candidate(row, spot_price=104.50)
 
     assert result["symbol"] == "UPS"
+    assert result["strategy_type"] == "Diagonal Put Spread"
     assert result["strike"] == 100.0
     assert result["mid_price"] == 1.59
     
@@ -90,28 +93,42 @@ def test_diagonal_spread_analyzer_ups():
     assert result["expected_daily_relative_profit"] > 0
 
 
-def test_diagonal_spread_analyzer_xom():
+def test_cash_protected_put_analyzer_aapl():
     rules = StrategyRules.from_yaml("rules.yaml")
-    xom_pos = rules.get_basis_position("XOM")
-    analyzer = DiagonalSpreadAnalyzer(basis_long=xom_pos, rules=rules)
+    # No basis_long passed -> runs as Cash Protected Put
+    analyzer = ShortOptionsAnalyzer(basis_long=None, rules=rules)
 
+    # AAPL 300.00P (Spot = 306.00, Mid = 7.10, IV = 0.2288, DTE = 33)
     row = pd.Series({
-        "Strike": 150.0,
-        "Bid": 1.65,
-        "Ask": 1.82,
-        "Mid": 1.735,
-        "Delta": -0.2106,
-        "IV": 0.2853,
-        "dte": 34,
+        "Strike": 300.0,
+        "Bid": 7.00,
+        "Ask": 7.20,
+        "Mid": 7.10,
+        "Delta": -0.4562,
+        "IV": 0.2288,
+        "dte": 33,
         "expiration_date": "2026-09-18",
-        "symbol": "XOM",
+        "symbol": "AAPL",
     })
 
-    result = analyzer.analyze_candidate(row, spot_price=158.0)
+    result = analyzer.analyze_candidate(row, spot_price=306.00)
 
-    assert result["symbol"] == "XOM"
-    assert result["strike"] == 150.0
-    assert result["profit_usd"] == pytest.approx(173.50, rel=1e-2)
-    assert result["target_profit_usd"] == pytest.approx(1.735 * 0.80 * 100, rel=1e-2)
-    assert result["max_risk_usd"] == pytest.approx(((150 - 100) + (4.50 - 1.735)) * 100, rel=1e-2)
-    assert result["target_yield_pct"] > 0
+    assert result["symbol"] == "AAPL"
+    assert result["strategy_type"] == "Cash Protected Put"
+    assert result["strike"] == 300.0
+    assert result["mid_price"] == 7.10
+    
+    # Full Profit = 100% of extrinsic = 7.10 * 100 = $710.00
+    assert result["profit_usd"] == pytest.approx(710.00, rel=1e-2)
+    
+    # Target Profit = 80% of extrinsic = 7.10 * 0.80 * 100 = $568.00
+    assert result["target_profit_usd"] == pytest.approx(568.00, rel=1e-2)
+    
+    # Cash Protected Put Max Risk = (Strike - Mid) * 100 = (300.0 - 7.10) * 100 = $29290.00
+    assert result["max_risk_usd"] == pytest.approx((300.0 - 7.10) * 100, rel=1e-2)
+    
+    # Target Yield % = (568.00 / 29290.00) * 100 = 1.94%
+    assert result["target_yield_pct"] == pytest.approx((568.00 / 29290.00) * 100, rel=1e-2)
+    assert result["days_to_target"] > 0
+    assert result["daily_relative_profit"] > 0
+    assert result["expected_daily_relative_profit"] > 0

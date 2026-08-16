@@ -1,12 +1,13 @@
-"""Diagonal spread analyzer and short options profitability engine.
+"""Unified Options Strategy Analyzer for Diagonal Put Spreads and Cash Protected Puts (Cash Secured Puts).
 
+Single codebase providing high code reuse for pricing, decay, profit yield, and risk calculations.
 Rules and constants are loaded from rules.yaml.
-Basis long positions are loaded from a dedicated CSV file (e.g. basis_long_positions.csv).
-Calculates Full Profit, Max Risk, Target Profit (80%), and Target Yield %.
+Basis long positions for diagonal spreads are loaded from basis_long_positions.csv.
 """
 
 import logging
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple, Union
 import numpy as np
@@ -18,20 +19,10 @@ from options_analyzer.black_scholes import find_days_to_target_put
 logger = logging.getLogger("options_analyzer")
 
 
-class ShortOptionsAnalyzer:
-    """Base helper methods for standalone short options calculations."""
-
-    @staticmethod
-    def calculate_short_put_payoff(spot_price: float, strike_price: float, premium: float) -> float:
-        """Calculate payoff at expiration for a short put option per share."""
-        intrinsic_loss = max(0.0, strike_price - spot_price)
-        return premium - intrinsic_loss
-
-    @staticmethod
-    def calculate_short_call_payoff(spot_price: float, strike_price: float, premium: float) -> float:
-        """Calculate payoff at expiration for a short call option per share."""
-        intrinsic_loss = max(0.0, spot_price - strike_price)
-        return premium - intrinsic_loss
+class StrategyType(str, Enum):
+    """Supported short options strategy types."""
+    DIAGONAL_SPREAD = "diagonal_spread"
+    CASH_PROTECTED_PUT = "cash_protected_put"
 
 
 @dataclass
@@ -49,7 +40,7 @@ def load_basis_long_positions_from_csv(csv_path: Union[str, Path] = "basis_long_
     """Load basis long option positions directly from a CSV file."""
     path = Path(csv_path)
     if not path.exists():
-        raise FileNotFoundError(f"Basis long positions CSV file not found: {path.resolve()}")
+        return []
 
     df = pd.read_csv(path)
     required_cols = {"symbol", "strike", "expiration_date", "cost_basis"}
@@ -133,7 +124,6 @@ class StrategyRules:
         pos_csv = positions_file or data.get("positions_file", "basis_long_positions.csv")
         pos_csv_path = Path(pos_csv)
         if not pos_csv_path.is_absolute():
-            # Resolve relative to yaml file parent or current working directory
             candidate_1 = file_path.parent / pos_csv
             candidate_2 = Path.cwd() / pos_csv
             pos_csv_path = candidate_1 if candidate_1.exists() else candidate_2
@@ -160,9 +150,6 @@ class StrategyRules:
                 )
                 basis_positions.append(pos)
 
-        if not basis_positions:
-            raise ValueError(f"No basis long positions found in {pos_csv_path} or configuration file.")
-
         return cls(
             min_delta=float(delta_cfg["min_delta"]),
             max_delta=float(delta_cfg["max_delta"]),
@@ -176,24 +163,46 @@ class StrategyRules:
         )
 
 
-class DiagonalSpreadAnalyzer:
-    """Analyzes candidate short puts paired with a basis long put for diagonal spread profitability."""
+class ShortOptionsAnalyzer:
+    """Unified options profitability engine for both Diagonal Put Spreads and Cash Protected Puts."""
 
     def __init__(
         self,
         basis_long: Optional[LongOptionPosition] = None,
         rules: Optional[StrategyRules] = None,
+        strategy_type: Optional[Union[str, StrategyType]] = None,
         config_path: Union[str, Path] = "rules.yaml",
         positions_path: Optional[Union[str, Path]] = None,
     ):
         self.rules = rules or StrategyRules.from_yaml(config_path, positions_file=positions_path)
-        self.basis_long = basis_long or self.rules.basis_long
-        if self.basis_long is None:
-            raise ValueError("A valid basis_long position is required for DiagonalSpreadAnalyzer.")
+        self.basis_long = basis_long
+        
+        # Auto-detect strategy type if not explicitly provided
+        if isinstance(strategy_type, StrategyType):
+            self.strategy_type = strategy_type
+        elif strategy_type is not None:
+            self.strategy_type = StrategyType(str(strategy_type).lower())
+        else:
+            self.strategy_type = (
+                StrategyType.DIAGONAL_SPREAD if self.basis_long is not None
+                else StrategyType.CASH_PROTECTED_PUT
+            )
 
         self.target_yield = self.rules.target_yield
         self.target_residual_ratio = self.rules.target_residual_ratio
         self.risk_free_rate = self.rules.risk_free_rate
+
+    @staticmethod
+    def calculate_short_put_payoff(spot_price: float, strike_price: float, premium: float) -> float:
+        """Calculate payoff at expiration for a short put option per share."""
+        intrinsic_loss = max(0.0, strike_price - spot_price)
+        return premium - intrinsic_loss
+
+    @staticmethod
+    def calculate_short_call_payoff(spot_price: float, strike_price: float, premium: float) -> float:
+        """Calculate payoff at expiration for a short call option per share."""
+        intrinsic_loss = max(0.0, spot_price - strike_price)
+        return premium - intrinsic_loss
 
     def inspect_and_filter_candidates(
         self,
@@ -211,12 +220,14 @@ class DiagonalSpreadAnalyzer:
         min_d = min_delta if min_delta is not None else self.rules.min_delta
         max_d = max_delta if max_delta is not None else self.rules.max_delta
         req_otm = require_strike_less_than_spot if require_strike_less_than_spot is not None else self.rules.require_strike_less_than_spot
-        target_symbol = (symbol or self.basis_long.symbol).upper().strip()
+        
+        default_sym = self.basis_long.symbol if self.basis_long else "UNKNOWN"
+        target_symbol = (symbol or default_sym).upper().strip()
 
         data = df.copy()
 
         # Filter by symbol if symbol column is present
-        if "symbol" in data.columns:
+        if "symbol" in data.columns and target_symbol != "UNKNOWN":
             data = data[data["symbol"].str.upper() == target_symbol].copy()
 
         # Filter to target Option Type from YAML (e.g. Put)
@@ -284,7 +295,7 @@ class DiagonalSpreadAnalyzer:
         return selected_df, diag_df
 
     def analyze_candidate(self, row: pd.Series, spot_price: float) -> Dict[str, Any]:
-        """Perform comprehensive pricing decay, diagonal spread risk, Full Profit, Target Profit, and Target Yield calculations."""
+        """Perform comprehensive pricing decay, risk, Full Profit, Target Profit, and Target Yield calculations."""
         strike = float(row["Strike"])
         mid_price = float(row["Mid"])
         iv = float(row["IV"]) if ("IV" in row and not pd.isna(row["IV"]) and row["IV"] > 0) else 0.25
@@ -292,7 +303,9 @@ class DiagonalSpreadAnalyzer:
         delta = float(row["Delta"])
         abs_delta = abs(delta)
         exp_date = str(row.get("expiration_date", "Unknown"))
-        symbol = str(row.get("symbol", self.basis_long.symbol)).upper()
+        
+        default_sym = self.basis_long.symbol if self.basis_long else "UNKNOWN"
+        symbol = str(row.get("symbol", default_sym)).upper()
 
         # Intrinsic & Extrinsic values
         intrinsic_value = max(0.0, strike - spot_price)
@@ -301,7 +314,7 @@ class DiagonalSpreadAnalyzer:
         # Full Profit (100% of extrinsic premium collected, in USD)
         full_profit_usd = extrinsic_value * 100.0
 
-        # Target Profit (80% of extrinsic value by default from rules.yaml)
+        # Target Profit (configured yield, e.g. 80% of extrinsic value)
         target_profit_per_share = self.target_yield * extrinsic_value
         target_profit_usd = target_profit_per_share * 100.0  # 1 contract = 100 shares
 
@@ -324,12 +337,21 @@ class DiagonalSpreadAnalyzer:
         # Nominal Daily profit in USD
         daily_profit_usd = target_profit_usd / effective_days
 
-        # Risk calculation for diagonal spread on expiration date:
-        # Max risk per share = (Short Strike - Long Strike) + (Long Cost Basis - Short Mid Premium)
-        strike_diff = max(0.0, strike - self.basis_long.strike)
-        net_debit = self.basis_long.cost_basis - mid_price
-        spread_risk_per_share = strike_diff + net_debit
-        max_risk_usd = max(1.0, spread_risk_per_share * 100.0)
+        # Risk calculation based on strategy type:
+        if self.strategy_type == StrategyType.DIAGONAL_SPREAD and self.basis_long is not None:
+            # Diagonal Put Spread Risk:
+            # Max risk per share = (Short Strike - Long Strike) + (Long Cost Basis - Short Mid Premium)
+            strike_diff = max(0.0, strike - self.basis_long.strike)
+            net_debit = self.basis_long.cost_basis - mid_price
+            spread_risk_per_share = strike_diff + net_debit
+            max_risk_usd = max(1.0, spread_risk_per_share * 100.0)
+            strategy_name = "Diagonal Put Spread"
+        else:
+            # Cash Protected Put Risk:
+            # Max risk per share = Strike - Mid Price (Strike minus cost of PUT)
+            max_risk_per_share = max(0.01, strike - mid_price)
+            max_risk_usd = max_risk_per_share * 100.0
+            strategy_name = "Cash Protected Put"
 
         # Target Yield % = (Target Profit / Max Risk) * 100
         target_yield_pct = (target_profit_usd / max_risk_usd) * 100.0
@@ -351,6 +373,7 @@ class DiagonalSpreadAnalyzer:
 
         return {
             "symbol": symbol,
+            "strategy_type": strategy_name,
             "delta": delta,
             "abs_delta": abs_delta,
             "short_put_index": short_put_index,
@@ -358,7 +381,7 @@ class DiagonalSpreadAnalyzer:
             "daily_relative_profit": round(nominal_daily_rel_profit_pct, 3),
             "days_to_target": round(days_to_target, 2),
             "profit_usd": round(full_profit_usd, 2),            # Full 100% Extrinsic Profit in USD
-            "max_risk_usd": round(max_risk_usd, 2),            # Max Spread Risk in USD
+            "max_risk_usd": round(max_risk_usd, 2),            # Max Risk in USD
             "target_profit_usd": round(target_profit_usd, 2),  # Target Profit (80% Extrinsic) in USD
             "target_yield_pct": round(target_yield_pct, 2),    # Target Yield % = Target Profit / Max Risk
             "p_win_pct": round(p_win * 100, 2),
@@ -371,6 +394,7 @@ class DiagonalSpreadAnalyzer:
             "delta_efficiency": round(delta_efficiency, 3),
             "extrinsic_value": round(extrinsic_value, 4),
             "target_price": round(target_price, 4),
+            "spread_risk_usd": round(max_risk_usd, 2),          # for backward compatibility
         }
 
     def analyze_dataset(
@@ -403,3 +427,7 @@ class DiagonalSpreadAnalyzer:
         result_df = result_df.sort_values(by="abs_delta", ascending=True).reset_index(drop=True)
 
         return result_df, diag_df
+
+
+# Alias for backward compatibility
+DiagonalSpreadAnalyzer = ShortOptionsAnalyzer

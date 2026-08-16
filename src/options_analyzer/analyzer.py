@@ -1,7 +1,7 @@
 """Diagonal spread analyzer and short options profitability engine.
 
 Rules and basis option positions are loaded directly from rules.yaml (Single Source of Truth).
-Calculates probability-adjusted Expected Daily Relative Profit, Max Risk, and Yield % metrics.
+Calculates Full Profit, Max Risk, Target Profit (80%), and Target Yield %.
 """
 
 import logging
@@ -234,7 +234,7 @@ class DiagonalSpreadAnalyzer:
         return selected_df, diag_df
 
     def analyze_candidate(self, row: pd.Series, spot_price: float) -> Dict[str, Any]:
-        """Perform comprehensive pricing decay, diagonal spread risk, Expected Daily Relative Profit, and Yield % calculations."""
+        """Perform comprehensive pricing decay, diagonal spread risk, Full Profit, Target Profit, and Target Yield calculations."""
         strike = float(row["Strike"])
         mid_price = float(row["Mid"])
         iv = float(row["IV"]) if ("IV" in row and not pd.isna(row["IV"]) and row["IV"] > 0) else 0.25
@@ -248,7 +248,10 @@ class DiagonalSpreadAnalyzer:
         intrinsic_value = max(0.0, strike - spot_price)
         extrinsic_value = max(0.0, mid_price - intrinsic_value)
 
-        # Target profit: configured yield (e.g. 80%) of extrinsic value
+        # Full Profit (100% of extrinsic premium collected, in USD)
+        full_profit_usd = extrinsic_value * 100.0
+
+        # Target Profit (80% of extrinsic value by default from rules.yaml)
         target_profit_per_share = self.target_yield * extrinsic_value
         target_profit_usd = target_profit_per_share * 100.0  # 1 contract = 100 shares
 
@@ -278,8 +281,8 @@ class DiagonalSpreadAnalyzer:
         spread_risk_per_share = strike_diff + net_debit
         max_risk_usd = max(1.0, spread_risk_per_share * 100.0)
 
-        # Yield % = (Profit / Max Risk) * 100
-        yield_pct = (target_profit_usd / max_risk_usd) * 100.0
+        # Target Yield % = (Target Profit / Max Risk) * 100
+        target_yield_pct = (target_profit_usd / max_risk_usd) * 100.0
 
         # Nominal Daily Relative Profit % = (daily_profit_usd / max_risk_usd) * 100
         nominal_daily_rel_profit_pct = (daily_profit_usd / max_risk_usd) * 100.0
@@ -304,16 +307,16 @@ class DiagonalSpreadAnalyzer:
             "expected_daily_relative_profit": round(expected_daily_rel_profit_pct, 3),
             "daily_relative_profit": round(nominal_daily_rel_profit_pct, 3),
             "days_to_target": round(days_to_target, 2),
-            "profit_usd": round(target_profit_usd, 2),
-            "max_risk_usd": round(max_risk_usd, 2),
-            "yield_pct": round(yield_pct, 2),
+            "profit_usd": round(full_profit_usd, 2),            # Full 100% Extrinsic Profit in USD
+            "max_risk_usd": round(max_risk_usd, 2),            # Max Spread Risk in USD
+            "target_profit_usd": round(target_profit_usd, 2),  # Target Profit (80% Extrinsic) in USD
+            "target_yield_pct": round(target_yield_pct, 2),    # Target Yield % = Target Profit / Max Risk
             "p_win_pct": round(p_win * 100, 2),
             "strike": strike,
             "expiration_date": exp_date,
             "dte": int(dte_days),
             "mid_price": round(mid_price, 4),
             "iv_pct": round(iv * 100, 2),
-            "spread_risk_usd": round(max_risk_usd, 2),  # for backward compatibility
             "daily_profit_usd": round(daily_profit_usd, 2),
             "delta_efficiency": round(delta_efficiency, 3),
             "extrinsic_value": round(extrinsic_value, 4),

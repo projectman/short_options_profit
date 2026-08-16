@@ -93,7 +93,7 @@ def process_single_underlying(
         console.print(f"[yellow]No short put candidates matched filter criteria for {symbol}.[/yellow]")
         return None
 
-    # Column ordering with Max Risk and Yield % placed right after Profit ($)
+    # Column ordering: Profit ($), Max Risk ($), Target Profit ($), Target Yield (%)
     display_cols = [
         "symbol",
         "delta",
@@ -103,7 +103,8 @@ def process_single_underlying(
         "days_to_target",
         "profit_usd",
         "max_risk_usd",
-        "yield_pct",
+        "target_profit_usd",
+        "target_yield_pct",
         "p_win_pct",
         "strike",
         "expiration_date",
@@ -130,22 +131,22 @@ def process_single_underlying(
 
 ## Candidate Short Puts (Sorted by Delta)
 
-| Delta | Short Put Identifier | Expected Daily Rel Profit (%) | Daily Rel Profit (%) | Days to Target | Profit ($) | Max Risk ($) | Yield (%) | Win Prob | Strike ($) | Expiration | DTE | Mid Price ($) | Daily Profit ($) | IV (%) |
-|-------|----------------------|-------------------------------|----------------------|----------------|------------|--------------|-----------|----------|------------|------------|-----|---------------|------------------|--------|
+| Delta | Short Put Identifier | Expected Daily Rel Profit (%) | Daily Rel Profit (%) | Days to Target | Profit ($) | Max Risk ($) | Target Profit ($) | Target Yield (%) | Win Prob | Strike ($) | Expiration | DTE | Mid Price ($) | Daily Profit ($) | IV (%) |
+|-------|----------------------|-------------------------------|----------------------|----------------|------------|--------------|-------------------|------------------|----------|------------|------------|-----|---------------|------------------|--------|
 """
     for _, row in export_df.iterrows():
         md_content += (
             f"| {row['delta']:+.4f} | `{row['short_put_index']}` | **{row['expected_daily_relative_profit']:.3f}%** | "
             f"{row['daily_relative_profit']:.3f}% | {row['days_to_target']:.1f} | ${row['profit_usd']:.2f} | "
-            f"${row['max_risk_usd']:.2f} | **{row['yield_pct']:.2f}%** | {row['p_win_pct']:.1f}% | "
-            f"${row['strike']:.2f} | {row['expiration_date']} | {row['dte']} | ${row['mid_price']:.2f} | "
-            f"${row['daily_profit_usd']:.2f} | {row['iv_pct']:.1f}% |\n"
+            f"${row['max_risk_usd']:.2f} | ${row['target_profit_usd']:.2f} | **{row['target_yield_pct']:.2f}%** | "
+            f"{row['p_win_pct']:.1f}% | ${row['strike']:.2f} | {row['expiration_date']} | {row['dte']} | "
+            f"${row['mid_price']:.2f} | ${row['daily_profit_usd']:.2f} | {row['iv_pct']:.1f}% |\n"
         )
 
     with open(sym_md, "w", encoding="utf-8") as f:
         f.write(md_content)
 
-    # Rich Summary Table with Max Risk and Yield % right after Profit ($)
+    # Rich Summary Table
     table = Table(
         title=f"Final Selected Short Puts for {symbol} Diagonal Spread (Sorted by Delta)",
         title_style="bold magenta",
@@ -157,9 +158,10 @@ def process_single_underlying(
     table.add_column("Expected Daily Rel", justify="right", style="bold green")
     table.add_column("Daily Rel", justify="right", style="green")
     table.add_column("Days to Target", justify="right", style="yellow")
-    table.add_column("Profit ($)", justify="right", style="bold green")
+    table.add_column("Profit ($)", justify="right", style="white")
     table.add_column("Max Risk ($)", justify="right", style="red")
-    table.add_column("Yield (%)", justify="right", style="bold yellow")
+    table.add_column("Target Profit ($)", justify="right", style="bold green")
+    table.add_column("Target Yield (%)", justify="right", style="bold yellow")
     table.add_column("Win Prob", justify="right", style="magenta")
     table.add_column("Strike", justify="right")
     table.add_column("Exp Date", justify="center")
@@ -175,7 +177,8 @@ def process_single_underlying(
             f"{row['days_to_target']:.1f}",
             f"${row['profit_usd']:.2f}",
             f"${row['max_risk_usd']:.2f}",
-            f"{row['yield_pct']:.2f}%",
+            f"${row['target_profit_usd']:.2f}",
+            f"{row['target_yield_pct']:.2f}%",
             f"{row['p_win_pct']:.1f}%",
             f"${row['strike']:.2f}",
             str(row["expiration_date"]),

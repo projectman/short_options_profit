@@ -140,6 +140,7 @@ def process_single_underlying(
         "days_to_target",
         "profit_usd",
         "max_risk_usd",
+        "max_risk_pct",
         "target_profit_usd",
         "target_yield_pct",
         "p_win_pct",
@@ -181,20 +182,21 @@ def process_single_underlying(
 
 **Underlying**: {sym} ($ {spot_price:.2f})  
 **Strategy**: {strategy_title} with {target_yield_val * 100:.0f}% Extrinsic/Credit Profit Target  
+**Total Portfolio Capital**: ${rules.total_portfolio:,.2f}  
 {long_info}
 **Delta Filter**: [{rules.min_delta:.2f}, {rules.max_delta:.2f}]  
 **Valuation Rule**: Always use Medium price for Bid/Ask: $\\text{{Mid}} = \\frac{{\\text{{Bid}} + \\text{{Ask}}}}{{2}}$  
 
 ## Candidate Short Puts (Sorted by Delta)
 
-| Delta | Short Put Identifier | Expected Daily Rel Profit (%) | Daily Rel Profit (%) | Days to Target | Profit ($) | Max Risk ($) | Target Profit ($) | Target Yield (%) | Win Prob | Strike ($) | Expiration | DTE | Mid Price ($) | Daily Profit ($) | IV (%) |
-|-------|----------------------|-------------------------------|----------------------|----------------|------------|--------------|-------------------|------------------|----------|------------|------------|-----|---------------|------------------|--------|
+| Delta | Short Put Identifier | Expected Daily Rel Profit (%) | Daily Rel Profit (%) | Days to Target | Profit ($) | Max Risk ($) | Max Risk (%) | Target Profit ($) | Target Yield (%) | Win Prob | Strike ($) | Expiration | DTE | Mid Price ($) | Daily Profit ($) | IV (%) |
+|-------|----------------------|-------------------------------|----------------------|----------------|------------|--------------|--------------|-------------------|------------------|----------|------------|------------|-----|---------------|------------------|--------|
 """
     for _, row in export_df.iterrows():
         md_content += (
             f"| {row['delta']:+.4f} | `{row['short_put_index']}` | **{row['expected_daily_relative_profit']:.3f}%** | "
             f"{row['daily_relative_profit']:.3f}% | {row['days_to_target']:.1f} | ${row['profit_usd']:.2f} | "
-            f"${row['max_risk_usd']:.2f} | ${row['target_profit_usd']:.2f} | **{row['target_yield_pct']:.2f}%** | "
+            f"${row['max_risk_usd']:.2f} | {row['max_risk_pct']:.3f}% | ${row['target_profit_usd']:.2f} | **{row['target_yield_pct']:.2f}%** | "
             f"{row['p_win_pct']:.1f}% | ${row['strike']:.2f} | {row['expiration_date']} | {row['dte']} | "
             f"${row['mid_price']:.2f} | ${row['daily_profit_usd']:.2f} | {row['iv_pct']:.1f}% |\n"
         )
@@ -216,6 +218,7 @@ def process_single_underlying(
     table.add_column("Days to Target", justify="right", style="yellow")
     table.add_column("Profit ($)", justify="right", style="white")
     table.add_column("Max Risk ($)", justify="right", style="red")
+    table.add_column("Max Risk (%)", justify="right", style="red")
     table.add_column("Target Profit ($)", justify="right", style="bold green")
     table.add_column("Target Yield (%)", justify="right", style="bold yellow")
     table.add_column("Win Prob", justify="right", style="magenta")
@@ -233,6 +236,7 @@ def process_single_underlying(
             f"{row['days_to_target']:.1f}",
             f"${row['profit_usd']:.2f}",
             f"${row['max_risk_usd']:.2f}",
+            f"{row['max_risk_pct']:.3f}%",
             f"${row['target_profit_usd']:.2f}",
             f"{row['target_yield_pct']:.2f}%",
             f"{row['p_win_pct']:.1f}%",

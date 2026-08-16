@@ -1,5 +1,9 @@
 # Strategy Rules & Constants for Short Options Selection (Diagonal Spreads, Cash Protected Puts, Vertical Spreads)
 
+# Portfolio configuration
+portfolio:
+  total_portfolio: 1000000.0  # Total portfolio capital in USD ($1,000,000)
+
 # Delta filtering range for short puts
 delta_filter:
   min_delta: 0.15

@@ -81,13 +81,14 @@ class StrategyRules:
     option_type: str
     require_positive_mid: bool
     risk_free_rate: float
+    total_portfolio: float = 1000000.0
     target_yield_diagonal: float = 0.80
     target_residual_ratio_diagonal: float = 0.20
     target_yield_cash_protected: float = 0.50
     target_residual_ratio_cash_protected: float = 0.50
     target_yield_vertical: float = 0.50
     target_residual_ratio_vertical: float = 0.50
-    vertical_target_delta_offset: float = 0.15
+    vertical_target_delta_offset: float = 0.20
     vertical_min_long_delta: float = 0.05
     basis_long_positions: List[LongOptionPosition] = field(default_factory=list)
 
@@ -153,6 +154,9 @@ class StrategyRules:
         if not isinstance(data, dict):
             raise ValueError(f"Invalid YAML configuration format in {file_path}")
 
+        port_cfg = data.get("portfolio", {})
+        total_port = float(port_cfg.get("total_portfolio", data.get("total_portfolio", 1000000.0)))
+
         delta_cfg = data["delta_filter"]
         strike_cfg = data["strike_filter"]
         opt_cfg = data["option_selection"]
@@ -182,7 +186,7 @@ class StrategyRules:
             ty_vert = 0.50
             tr_vert = 0.50
 
-        vert_offset = float(vert_cfg.get("target_delta_offset", 0.15))
+        vert_offset = float(vert_cfg.get("target_delta_offset", 0.20))
         vert_min_long = float(vert_cfg.get("min_long_delta", 0.05))
 
         # Determine positions file path
@@ -220,6 +224,7 @@ class StrategyRules:
             require_strike_less_than_spot=bool(strike_cfg["require_strike_less_than_spot"]),
             option_type=str(opt_cfg["option_type"]),
             require_positive_mid=bool(opt_cfg["require_positive_mid"]),
+            total_portfolio=total_port,
             target_yield_diagonal=ty_diag,
             target_residual_ratio_diagonal=tr_diag,
             target_yield_cash_protected=ty_cash,
@@ -376,7 +381,7 @@ class ShortOptionsAnalyzer:
           - Same expiration date
           - Long Strike < Short Strike
           - Absolute Delta >= vertical_min_long_delta (e.g. 0.05)
-          - Absolute Delta closest to [short put delta - vertical_target_delta_offset (0.15)]
+          - Absolute Delta closest to [short put delta - vertical_target_delta_offset (0.20)]
         """
         exp_date = str(short_row.get("expiration_date", ""))
         short_strike = float(short_row["Strike"])
@@ -503,6 +508,10 @@ class ShortOptionsAnalyzer:
             strategy_name = "Cash Protected Put"
             short_put_index = f"{symbol} {exp_date} {strike:.2f}P"
 
+        # Max Risk % of Total Portfolio = (Max Risk USD / Total Portfolio) * 100
+        total_port = self.rules.total_portfolio if self.rules.total_portfolio > 0 else 1000000.0
+        max_risk_pct = (max_risk_usd / total_port) * 100.0
+
         # Target Yield % = (Target Profit / Max Risk) * 100
         target_yield_pct = (target_profit_usd / max_risk_usd) * 100.0
 
@@ -529,6 +538,7 @@ class ShortOptionsAnalyzer:
             "days_to_target": round(days_to_target, 2),
             "profit_usd": round(full_profit_usd, 2),            # Full 100% Extrinsic or Net Credit in USD
             "max_risk_usd": round(max_risk_usd, 2),            # Max Risk in USD
+            "max_risk_pct": round(max_risk_pct, 4),            # Max Risk as % of total portfolio
             "target_profit_usd": round(target_profit_usd, 2),  # Target Profit in USD
             "target_yield_pct": round(target_yield_pct, 2),    # Target Yield % = Target Profit / Max Risk
             "p_win_pct": round(p_win * 100, 2),
@@ -545,6 +555,7 @@ class ShortOptionsAnalyzer:
             "extrinsic_value": round(extrinsic_value, 4),
             "target_price": round(target_price, 4),
             "target_yield_ratio": self.target_yield,
+            "total_portfolio": total_port,
             "spread_risk_usd": round(max_risk_usd, 2),          # for backward compatibility
         }
 

@@ -33,6 +33,7 @@ def test_strategy_rules_from_yaml():
     assert rules.target_yield_vertical == 0.50
     assert rules.vertical_target_delta_offset == 0.20
     assert rules.vertical_min_long_delta == 0.05
+    assert rules.total_portfolio == 1000000.0
     
     symbols = rules.list_symbols()
     assert "UPS" in symbols
@@ -79,6 +80,7 @@ def test_diagonal_spread_analyzer_ups():
     
     # Spread risk: (100 - 80) + (3.37 - 1.59) = 20 + 1.78 = 21.78 -> $2178.00
     assert result["max_risk_usd"] == pytest.approx(2178.0, rel=1e-2)
+    assert result["max_risk_pct"] == pytest.approx((2178.0 / 1000000.0) * 100, rel=1e-2)
     
     # Target Yield % = (127.20 / 2178.0) * 100 = 5.84%
     assert result["target_yield_pct"] == pytest.approx((127.20 / 2178.0) * 100, rel=1e-2)
@@ -119,6 +121,7 @@ def test_cash_protected_put_analyzer_aapl():
     
     # Cash Protected Put Max Risk = (Strike - Mid) * 100 = (300.0 - 7.10) * 100 = $29290.00
     assert result["max_risk_usd"] == pytest.approx((300.0 - 7.10) * 100, rel=1e-2)
+    assert result["max_risk_pct"] == pytest.approx((29290.0 / 1000000.0) * 100, rel=1e-2)
     
     # Target Yield % = (355.00 / 29290.00) * 100 = 1.21%
     assert result["target_yield_pct"] == pytest.approx((355.00 / 29290.00) * 100, rel=1e-2)
@@ -161,6 +164,7 @@ def test_vertical_spread_analyzer_aapl():
     
     # Max Risk = (300 - 285 - 3.65) * 100 = 11.35 * 100 = $1135.00
     assert result["max_risk_usd"] == pytest.approx(1135.00, rel=1e-2)
+    assert result["max_risk_pct"] == pytest.approx((1135.00 / 1000000.0) * 100, rel=1e-2)
     
     # Target Yield % = (182.50 / 1135.00) * 100 = 16.08%
     assert result["target_yield_pct"] == pytest.approx((182.50 / 1135.00) * 100, rel=1e-2)

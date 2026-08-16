@@ -1,4 +1,4 @@
-"""Main entry point for Short Options Profit & Diagonal Spread Selection Analyzer with Both Expected and Nominal Daily Relative Profit."""
+"""Main entry point for Short Options Profit & Diagonal Spread Selection Analyzer with Individual Per-Symbol Reports."""
 
 import argparse
 import sys
@@ -93,7 +93,7 @@ def process_single_underlying(
         console.print(f"[yellow]No short put candidates matched filter criteria for {symbol}.[/yellow]")
         return None
 
-    # Column ordering including BOTH Expected and Nominal Daily Relative Profit
+    # Column ordering with Max Risk and Yield % placed right after Profit ($)
     display_cols = [
         "symbol",
         "delta",
@@ -102,19 +102,20 @@ def process_single_underlying(
         "daily_relative_profit",
         "days_to_target",
         "profit_usd",
+        "max_risk_usd",
+        "yield_pct",
         "p_win_pct",
         "strike",
         "expiration_date",
         "dte",
         "mid_price",
-        "spread_risk_usd",
         "daily_profit_usd",
         "delta_efficiency",
         "iv_pct",
     ]
     export_df = results_df[display_cols].copy()
 
-    # Save per-symbol outputs
+    # Save per-symbol outputs ONLY
     sym_csv = output_dir / f"diagonal_spread_analysis_{symbol}.csv"
     sym_md = output_dir / f"diagonal_spread_analysis_{symbol}.md"
     export_df.to_csv(sym_csv, index=False)
@@ -129,21 +130,22 @@ def process_single_underlying(
 
 ## Candidate Short Puts (Sorted by Delta)
 
-| Delta | Short Put Identifier | Expected Daily Rel Profit (%) | Daily Rel Profit (%) | Days to Target | Profit ($) | Win Prob | Strike ($) | Expiration | DTE | Mid Price ($) | Spread Risk ($) | Daily Profit ($) | IV (%) |
-|-------|----------------------|-------------------------------|----------------------|----------------|------------|----------|------------|------------|-----|---------------|-----------------|------------------|--------|
+| Delta | Short Put Identifier | Expected Daily Rel Profit (%) | Daily Rel Profit (%) | Days to Target | Profit ($) | Max Risk ($) | Yield (%) | Win Prob | Strike ($) | Expiration | DTE | Mid Price ($) | Daily Profit ($) | IV (%) |
+|-------|----------------------|-------------------------------|----------------------|----------------|------------|--------------|-----------|----------|------------|------------|-----|---------------|------------------|--------|
 """
     for _, row in export_df.iterrows():
         md_content += (
             f"| {row['delta']:+.4f} | `{row['short_put_index']}` | **{row['expected_daily_relative_profit']:.3f}%** | "
             f"{row['daily_relative_profit']:.3f}% | {row['days_to_target']:.1f} | ${row['profit_usd']:.2f} | "
-            f"{row['p_win_pct']:.1f}% | ${row['strike']:.2f} | {row['expiration_date']} | {row['dte']} | "
-            f"${row['mid_price']:.2f} | ${row['spread_risk_usd']:.2f} | ${row['daily_profit_usd']:.2f} | {row['iv_pct']:.1f}% |\n"
+            f"${row['max_risk_usd']:.2f} | **{row['yield_pct']:.2f}%** | {row['p_win_pct']:.1f}% | "
+            f"${row['strike']:.2f} | {row['expiration_date']} | {row['dte']} | ${row['mid_price']:.2f} | "
+            f"${row['daily_profit_usd']:.2f} | {row['iv_pct']:.1f}% |\n"
         )
 
     with open(sym_md, "w", encoding="utf-8") as f:
         f.write(md_content)
 
-    # Rich Summary Table
+    # Rich Summary Table with Max Risk and Yield % right after Profit ($)
     table = Table(
         title=f"Final Selected Short Puts for {symbol} Diagonal Spread (Sorted by Delta)",
         title_style="bold magenta",
@@ -155,13 +157,14 @@ def process_single_underlying(
     table.add_column("Expected Daily Rel", justify="right", style="bold green")
     table.add_column("Daily Rel", justify="right", style="green")
     table.add_column("Days to Target", justify="right", style="yellow")
-    table.add_column("Profit ($)", justify="right", style="green")
+    table.add_column("Profit ($)", justify="right", style="bold green")
+    table.add_column("Max Risk ($)", justify="right", style="red")
+    table.add_column("Yield (%)", justify="right", style="bold yellow")
     table.add_column("Win Prob", justify="right", style="magenta")
     table.add_column("Strike", justify="right")
     table.add_column("Exp Date", justify="center")
     table.add_column("DTE", justify="right")
     table.add_column("Mid ($)", justify="right")
-    table.add_column("Spread Risk ($)", justify="right", style="red")
 
     for _, row in export_df.iterrows():
         table.add_row(
@@ -171,12 +174,13 @@ def process_single_underlying(
             f"{row['daily_relative_profit']:.3f}%",
             f"{row['days_to_target']:.1f}",
             f"${row['profit_usd']:.2f}",
+            f"${row['max_risk_usd']:.2f}",
+            f"{row['yield_pct']:.2f}%",
             f"{row['p_win_pct']:.1f}%",
             f"${row['strike']:.2f}",
             str(row["expiration_date"]),
             str(row["dte"]),
             f"${row['mid_price']:.2f}",
-            f"${row['spread_risk_usd']:.2f}",
         )
 
     console.print(table)
@@ -186,7 +190,7 @@ def process_single_underlying(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Analyze diagonal spread short put candidates with Expected and Nominal Daily Relative Profit.")
+    parser = argparse.ArgumentParser(description="Analyze diagonal spread short put candidates with individual per-symbol reports.")
     parser.add_argument("--config", default="rules.yaml", help="Path to YAML rules configuration file (default: rules.yaml)")
     parser.add_argument("--source", default="source", help="Directory containing downloaded options files (default: source)")
     parser.add_argument("--symbol", default=None, help="Target underlying symbol (e.g. UPS, XOM, or ALL). If omitted, an interactive prompt is shown.")
@@ -235,7 +239,7 @@ def main():
         console.print("\n[bold cyan]Select Underlying to Analyze:[/bold cyan]")
         for i, sym in enumerate(choices, 1):
             if sym == "ALL":
-                console.print(f"  [{i}] [bold green]ALL[/bold green] (Process all configured underlyings)")
+                console.print(f"  [{i}] [bold green]ALL[/bold green] (Process all configured underlyings individually)")
             else:
                 pos = rules.get_basis_position(sym)
                 console.print(f"  [{i}] [bold yellow]{sym}[/bold yellow] (Basis Long: {pos.strike:.2f}P {pos.expiration_date} @ ${pos.cost_basis:.2f})")
@@ -258,7 +262,6 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     symbols_to_process = available_symbols if target_symbol == "ALL" else [target_symbol]
-    all_exports: List[pd.DataFrame] = []
 
     for sym in symbols_to_process:
         pos = rules.get_basis_position(sym)
@@ -266,7 +269,7 @@ def main():
             console.print(f"[red]Error: Symbol '{sym}' is not configured in {args.config}.[/red]")
             continue
 
-        res_df = process_single_underlying(
+        process_single_underlying(
             console=console,
             rules=rules,
             basis_pos=pos,
@@ -274,38 +277,8 @@ def main():
             output_dir=output_dir,
             show_all_puts=args.show_all_puts,
         )
-        if res_df is not None and not res_df.empty:
-            all_exports.append(res_df)
 
-    if all_exports:
-        combined_df = pd.concat(all_exports, ignore_index=True)
-        combined_csv = output_dir / "diagonal_spread_analysis.csv"
-        combined_md = output_dir / "diagonal_spread_analysis.md"
-        combined_df.to_csv(combined_csv, index=False)
-
-        md_content = f"""# Multi-Asset Short Options Selection & Diagonal Spread Analysis
-
-**Strategy**: Diagonal Put Spread with {rules.target_yield * 100:.0f}% Extrinsic Profit Target  
-**Delta Filter**: [{rules.min_delta:.2f}, {rules.max_delta:.2f}]  
-**Valuation Rule**: Always use Medium price for Bid/Ask: $\\text{{Mid}} = \\frac{{\\text{{Bid}} + \\text{{Ask}}}}{{2}}$  
-
-## Combined Candidate Short Puts
-
-| Symbol | Delta | Short Put Identifier | Expected Daily Rel Profit (%) | Daily Rel Profit (%) | Days to Target | Profit ($) | Win Prob | Strike ($) | Expiration | DTE | Mid Price ($) | Spread Risk ($) | Daily Profit ($) | IV (%) |
-|--------|-------|----------------------|-------------------------------|----------------------|----------------|------------|----------|------------|------------|-----|---------------|-----------------|------------------|--------|
-"""
-        for _, row in combined_df.iterrows():
-            md_content += (
-                f"| **{row['symbol']}** | {row['delta']:+.4f} | `{row['short_put_index']}` | **{row['expected_daily_relative_profit']:.3f}%** | "
-                f"{row['daily_relative_profit']:.3f}% | {row['days_to_target']:.1f} | ${row['profit_usd']:.2f} | "
-                f"{row['p_win_pct']:.1f}% | ${row['strike']:.2f} | {row['expiration_date']} | {row['dte']} | "
-                f"${row['mid_price']:.2f} | ${row['spread_risk_usd']:.2f} | ${row['daily_profit_usd']:.2f} | {row['iv_pct']:.1f}% |\n"
-            )
-
-        with open(combined_md, "w", encoding="utf-8") as f:
-            f.write(md_content)
-
-        console.print(f"\n[bold green]✓ Combined results updated in:[/bold green] [cyan]{combined_csv}[/cyan] and [cyan]{combined_md}[/cyan]\n")
+    console.print(f"\n[bold green]✓ All individual analysis reports generated in [cyan]{output_dir}/[/cyan][/bold green]\n")
 
 
 if __name__ == "__main__":

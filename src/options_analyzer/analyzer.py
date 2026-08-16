@@ -1,7 +1,7 @@
 """Diagonal spread analyzer and short options profitability engine.
 
 Rules and basis option positions are loaded directly from rules.yaml (Single Source of Truth).
-Calculates probability-adjusted Expected Daily Relative Profit for robust options selection.
+Calculates probability-adjusted Expected Daily Relative Profit, Max Risk, and Yield % metrics.
 """
 
 import logging
@@ -234,7 +234,7 @@ class DiagonalSpreadAnalyzer:
         return selected_df, diag_df
 
     def analyze_candidate(self, row: pd.Series, spot_price: float) -> Dict[str, Any]:
-        """Perform comprehensive pricing decay, diagonal spread risk, and Expected Daily Relative Profit calculations."""
+        """Perform comprehensive pricing decay, diagonal spread risk, Expected Daily Relative Profit, and Yield % calculations."""
         strike = float(row["Strike"])
         mid_price = float(row["Mid"])
         iv = float(row["IV"]) if ("IV" in row and not pd.isna(row["IV"]) and row["IV"] > 0) else 0.25
@@ -276,10 +276,13 @@ class DiagonalSpreadAnalyzer:
         strike_diff = max(0.0, strike - self.basis_long.strike)
         net_debit = self.basis_long.cost_basis - mid_price
         spread_risk_per_share = strike_diff + net_debit
-        spread_risk_usd = max(1.0, spread_risk_per_share * 100.0)
+        max_risk_usd = max(1.0, spread_risk_per_share * 100.0)
 
-        # Nominal Daily Relative Profit % = (daily_profit_usd / spread_risk_usd) * 100
-        nominal_daily_rel_profit_pct = (daily_profit_usd / spread_risk_usd) * 100.0
+        # Yield % = (Profit / Max Risk) * 100
+        yield_pct = (target_profit_usd / max_risk_usd) * 100.0
+
+        # Nominal Daily Relative Profit % = (daily_profit_usd / max_risk_usd) * 100
+        nominal_daily_rel_profit_pct = (daily_profit_usd / max_risk_usd) * 100.0
 
         # Estimated Probability of Profit (P_win = 1 - |Delta|)
         p_win = max(0.0, min(1.0, 1.0 - abs_delta))
@@ -300,15 +303,17 @@ class DiagonalSpreadAnalyzer:
             "short_put_index": short_put_index,
             "expected_daily_relative_profit": round(expected_daily_rel_profit_pct, 3),
             "daily_relative_profit": round(nominal_daily_rel_profit_pct, 3),
-            "p_win_pct": round(p_win * 100, 2),
             "days_to_target": round(days_to_target, 2),
             "profit_usd": round(target_profit_usd, 2),
+            "max_risk_usd": round(max_risk_usd, 2),
+            "yield_pct": round(yield_pct, 2),
+            "p_win_pct": round(p_win * 100, 2),
             "strike": strike,
             "expiration_date": exp_date,
             "dte": int(dte_days),
             "mid_price": round(mid_price, 4),
             "iv_pct": round(iv * 100, 2),
-            "spread_risk_usd": round(spread_risk_usd, 2),
+            "spread_risk_usd": round(max_risk_usd, 2),  # for backward compatibility
             "daily_profit_usd": round(daily_profit_usd, 2),
             "delta_efficiency": round(delta_efficiency, 3),
             "extrinsic_value": round(extrinsic_value, 4),

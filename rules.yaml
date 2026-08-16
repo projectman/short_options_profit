@@ -39,3 +39,10 @@ basis_long_positions:
     expiration_date: "2027-06-17"
     cost_basis: 4.50             # Purchase price per share ($4.50, editable)
     contracts: 1
+
+  - symbol: "PLTR"
+    option_type: "Put"
+    strike: 200.0
+    expiration_date: "2027-06-17"
+    cost_basis: 58.92            # Purchase price per share ($58.92)
+    contracts: 1
